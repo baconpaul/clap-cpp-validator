@@ -37,13 +37,46 @@ class PluginTests
     static TestResult runTest(const std::string &testName, PluginLibrary &library,
                               const std::string &pluginId);
 
-    // Individual test implementations
+    // Descriptor tests
     static TestResult testDescriptorConsistency(PluginLibrary &library,
                                                 const std::string &pluginId);
     static TestResult testFeaturesCategories(PluginLibrary &library, const std::string &pluginId);
     static TestResult testFeaturesDuplicates(PluginLibrary &library, const std::string &pluginId);
-    static TestResult testProcessAudioBasic(PluginLibrary &library, const std::string &pluginId);
+
+    // Processing tests
+    static TestResult testProcessAudioOutOfPlaceBasic(PluginLibrary &library,
+                                                      const std::string &pluginId);
+    static TestResult testProcessNoteOutOfPlaceBasic(PluginLibrary &library,
+                                                     const std::string &pluginId);
+    static TestResult testProcessNoteInconsistent(PluginLibrary &library,
+                                                  const std::string &pluginId);
+
+    // Parameter tests
     static TestResult testParamConversions(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testParamFuzzBasic(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testParamSetWrongNamespace(PluginLibrary &library,
+                                                 const std::string &pluginId);
+
+    // State tests
+    static TestResult testStateInvalid(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testStateReproducibilityBasic(PluginLibrary &library,
+                                                    const std::string &pluginId);
+    static TestResult testStateReproducibilityNullCookies(PluginLibrary &library,
+                                                         const std::string &pluginId);
+    static TestResult testStateReproducibilityFlush(PluginLibrary &library,
+                                                    const std::string &pluginId);
+    static TestResult testStateBufferedStreams(PluginLibrary &library, const std::string &pluginId);
+
+  private:
+    // Helper for state reproducibility tests with optional null cookies
+    static TestResult testStateReproducibilityImpl(PluginLibrary &library,
+                                                   const std::string &pluginId,
+                                                   bool zeroOutCookies);
+
+    // Constants for param fuzzing
+    static constexpr size_t FUZZ_NUM_PERMUTATIONS = 50;
+    static constexpr size_t FUZZ_RUNS_PER_PERMUTATION = 5;
+    static constexpr size_t BUFFER_SIZE = 512;
 };
 
 } // namespace clap_validator
