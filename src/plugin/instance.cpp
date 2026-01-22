@@ -1,162 +1,203 @@
+/*
+ * clap-cpp-validator: A re-implementation of the RUST clap validator
+ * in c++
+ *
+ * Copyright 2026, various authors, as described in the GitHub
+ * transaction log.
+ *
+ * This code is licensed under the MIT software licensed. It is
+ * initiated by using Claude Sonnet to port the equivalent but
+ * no longer actively developed RUST validator.
+ *
+ * All source in sst-filters available at
+ * https://github.com/baconpaul/clap-cpp-validator
+ */
 #include "instance.h"
 #include "host.h"
 #include "library.h"
 #include <stdexcept>
 
-namespace clap_validator {
+namespace clap_validator
+{
 
-Plugin::Plugin(const clap_plugin_t* plugin, std::shared_ptr<Host> host, const std::string& pluginId)
-    : plugin_(plugin)
-    , host_(std::move(host))
-    , pluginId_(pluginId)
+Plugin::Plugin(const clap_plugin_t *plugin, std::shared_ptr<Host> host, const std::string &pluginId)
+    : plugin_(plugin), host_(std::move(host)), pluginId_(pluginId)
 {
     host_->setCurrentPlugin(this);
 }
 
-Plugin::~Plugin() {
-    if (status_ == PluginStatus::ActiveAndProcessing) {
+Plugin::~Plugin()
+{
+    if (status_ == PluginStatus::ActiveAndProcessing)
+    {
         stopProcessing();
     }
-    if (status_ == PluginStatus::ActiveAndSleeping) {
+    if (status_ == PluginStatus::ActiveAndSleeping)
+    {
         deactivate();
     }
-    
-    if (plugin_) {
-        if (initialized_) {
+
+    if (plugin_)
+    {
+        if (initialized_)
+        {
             plugin_->destroy(plugin_);
         }
     }
-    
-    if (host_) {
+
+    if (host_)
+    {
         host_->setCurrentPlugin(nullptr);
     }
 }
 
-std::unique_ptr<Plugin> Plugin::create(
-    const PluginLibrary* library,
-    const clap_plugin_factory_t* factory,
-    const std::string& pluginId,
-    std::shared_ptr<Host> host)
+std::unique_ptr<Plugin> Plugin::create(const PluginLibrary *library,
+                                       const clap_plugin_factory_t *factory,
+                                       const std::string &pluginId, std::shared_ptr<Host> host)
 {
-    if (!factory || !host) {
+    if (!factory || !host)
+    {
         throw std::runtime_error("Invalid factory or host");
     }
-    
-    const clap_plugin_t* plugin = factory->create_plugin(
-        factory,
-        host->clapHost(),
-        pluginId.c_str()
-    );
-    
-    if (!plugin) {
+
+    const clap_plugin_t *plugin =
+        factory->create_plugin(factory, host->clapHost(), pluginId.c_str());
+
+    if (!plugin)
+    {
         throw std::runtime_error("Failed to create plugin: " + pluginId);
     }
-    
+
     return std::unique_ptr<Plugin>(new Plugin(plugin, std::move(host), pluginId));
 }
 
-bool Plugin::init() {
-    if (initialized_) {
+bool Plugin::init()
+{
+    if (initialized_)
+    {
         return true;
     }
-    
-    if (!plugin_ || !plugin_->init) {
+
+    if (!plugin_ || !plugin_->init)
+    {
         return false;
     }
-    
+
     initialized_ = plugin_->init(plugin_);
     return initialized_;
 }
 
-bool Plugin::activate(double sampleRate, uint32_t minFrameCount, uint32_t maxFrameCount) {
-    if (!initialized_) {
+bool Plugin::activate(double sampleRate, uint32_t minFrameCount, uint32_t maxFrameCount)
+{
+    if (!initialized_)
+    {
         return false;
     }
-    
-    if (status_ != PluginStatus::Inactive) {
+
+    if (status_ != PluginStatus::Inactive)
+    {
         return false;
     }
-    
-    if (!plugin_ || !plugin_->activate) {
+
+    if (!plugin_ || !plugin_->activate)
+    {
         return false;
     }
-    
-    if (plugin_->activate(plugin_, sampleRate, minFrameCount, maxFrameCount)) {
+
+    if (plugin_->activate(plugin_, sampleRate, minFrameCount, maxFrameCount))
+    {
         status_ = PluginStatus::ActiveAndSleeping;
         return true;
     }
-    
+
     return false;
 }
 
-void Plugin::deactivate() {
-    if (status_ == PluginStatus::ActiveAndProcessing) {
+void Plugin::deactivate()
+{
+    if (status_ == PluginStatus::ActiveAndProcessing)
+    {
         stopProcessing();
     }
-    
-    if (status_ != PluginStatus::ActiveAndSleeping) {
+
+    if (status_ != PluginStatus::ActiveAndSleeping)
+    {
         return;
     }
-    
-    if (plugin_ && plugin_->deactivate) {
+
+    if (plugin_ && plugin_->deactivate)
+    {
         plugin_->deactivate(plugin_);
     }
-    
+
     status_ = PluginStatus::Inactive;
 }
 
-bool Plugin::startProcessing() {
-    if (status_ != PluginStatus::ActiveAndSleeping) {
+bool Plugin::startProcessing()
+{
+    if (status_ != PluginStatus::ActiveAndSleeping)
+    {
         return false;
     }
-    
-    if (!plugin_ || !plugin_->start_processing) {
+
+    if (!plugin_ || !plugin_->start_processing)
+    {
         // start_processing is optional
         status_ = PluginStatus::ActiveAndProcessing;
         return true;
     }
-    
-    if (plugin_->start_processing(plugin_)) {
+
+    if (plugin_->start_processing(plugin_))
+    {
         status_ = PluginStatus::ActiveAndProcessing;
         return true;
     }
-    
+
     return false;
 }
 
-void Plugin::stopProcessing() {
-    if (status_ != PluginStatus::ActiveAndProcessing) {
+void Plugin::stopProcessing()
+{
+    if (status_ != PluginStatus::ActiveAndProcessing)
+    {
         return;
     }
-    
-    if (plugin_ && plugin_->stop_processing) {
+
+    if (plugin_ && plugin_->stop_processing)
+    {
         plugin_->stop_processing(plugin_);
     }
-    
+
     status_ = PluginStatus::ActiveAndSleeping;
 }
 
-clap_process_status Plugin::process(const clap_process_t* processData) {
-    if (status_ != PluginStatus::ActiveAndProcessing) {
+clap_process_status Plugin::process(const clap_process_t *processData)
+{
+    if (status_ != PluginStatus::ActiveAndProcessing)
+    {
         return CLAP_PROCESS_ERROR;
     }
-    
-    if (!plugin_ || !plugin_->process) {
+
+    if (!plugin_ || !plugin_->process)
+    {
         return CLAP_PROCESS_ERROR;
     }
-    
+
     return plugin_->process(plugin_, processData);
 }
 
-const clap_plugin_descriptor_t* Plugin::descriptor() const {
+const clap_plugin_descriptor_t *Plugin::descriptor() const
+{
     return plugin_ ? plugin_->desc : nullptr;
 }
 
-const void* Plugin::getExtension(const char* extensionId) const {
-    if (!plugin_ || !plugin_->get_extension || !extensionId) {
+const void *Plugin::getExtension(const char *extensionId) const
+{
+    if (!plugin_ || !plugin_->get_extension || !extensionId)
+    {
         return nullptr;
     }
-    
+
     return plugin_->get_extension(plugin_, extensionId);
 }
 

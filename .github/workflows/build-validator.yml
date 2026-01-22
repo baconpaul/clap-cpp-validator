@@ -1,0 +1,59 @@
+name: Build Clap CPP Validator
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v**'
+  pull_request:
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build_plugin:
+    name: Build - ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-msvc-x64
+            cmake_args: -Ax64
+            pr_build: Debug
+
+          - os: windows-latest
+            name: windows-clang-cl
+            cmake_args: -G"Visual Studio 17 2022" -A x64 -T ClangCL -DCMAKE_SYSTEM_VERSION=10 -DOBXF_EXTRA_ZIP_NAME="-clang-cl"
+            upload_asset: false
+            pr_build: Debug
+
+          - os: macos-latest
+            name: macos
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -GNinja
+            upload_asset: true
+            pr_build: Debug
+
+          - os: ubuntu-latest
+            name: linux-x64 gcc13
+            cmake_args: -GNinja -DCMAKE_CXX_COMPILER=g++-13 -DCMAKE_C_COMPILER=gcc-13
+            upload_asset: false
+            pr_build: Release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: |
+          cmake -S . -B ./build ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=${{ matrix.pr_build }}  -DGITHUB_ACTIONS_BUILD=TRUE 
+
+      - name: Build
+        run: |
+          cmake --build ./build --config ${{ matrix.pr_build }}  --parallel 3
