@@ -17,6 +17,7 @@
 #include "../plugin/host.h"
 #include "../plugin/instance.h"
 #include <set>
+#include <cmath>
 #include <cstring>
 
 namespace clap_validator
