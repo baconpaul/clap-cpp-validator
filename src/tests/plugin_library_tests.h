@@ -34,10 +34,19 @@ class PluginLibraryTests
     static TestResult runTest(const std::string &testName,
                               const std::filesystem::path &libraryPath);
 
-    // Individual test implementations
+    // Scanning tests
     static TestResult testScanTime(const std::filesystem::path &libraryPath);
+    static TestResult testScanRtldNow(const std::filesystem::path &libraryPath);
+
+    // Factory tests
     static TestResult testQueryNonexistentFactory(const std::filesystem::path &libraryPath);
     static TestResult testCreateIdWithTrailingGarbage(const std::filesystem::path &libraryPath);
+
+    // Preset discovery tests
+    static TestResult testPresetDiscoveryCrawl(const std::filesystem::path &libraryPath);
+    static TestResult testPresetDiscoveryDescriptorConsistency(
+        const std::filesystem::path &libraryPath);
+    static TestResult testPresetDiscoveryLoad(const std::filesystem::path &libraryPath);
 
   private:
     static constexpr int SCAN_TIME_LIMIT_MS = 100;
