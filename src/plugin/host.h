@@ -1,0 +1,91 @@
+#pragma once
+
+#include <memory>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <clap/clap.h>
+
+namespace clap_validator {
+
+// Forward declaration
+class Plugin;
+
+// An abstraction for a CLAP plugin host used for validation
+class Host : public std::enable_shared_from_this<Host> {
+public:
+    Host();
+    ~Host();
+    
+    // Get the clap_host struct to pass to plugins
+    const clap_host_t* clapHost() const { return &clapHost_; }
+    
+    // Set the current plugin instance (for callbacks)
+    void setCurrentPlugin(Plugin* plugin) { currentPlugin_ = plugin; }
+    
+    // Check if any callbacks were called from the wrong thread
+    std::optional<std::string> getCallbackError() const;
+    void clearCallbackError();
+    
+    // Handle pending callbacks
+    void handleCallbacksOnce();
+    
+    // Thread checking
+    bool isMainThread() const;
+    void setAudioThread(std::thread::id threadId);
+    void clearAudioThread();
+    bool isAudioThread() const;
+    
+    // Callback flags
+    bool hasRequestedCallback() const { return requestedCallback_.load(); }
+    void clearRequestedCallback() { requestedCallback_.store(false); }
+    bool hasRequestedRestart() const { return requestedRestart_.load(); }
+    void clearRequestedRestart() { requestedRestart_.store(false); }
+
+private:
+    // CLAP host callbacks
+    static const void* CLAP_ABI getExtension(const clap_host_t* host, const char* extensionId);
+    static void CLAP_ABI requestRestart(const clap_host_t* host);
+    static void CLAP_ABI requestProcess(const clap_host_t* host);
+    static void CLAP_ABI requestCallback(const clap_host_t* host);
+    
+    // Thread check extension
+    static bool CLAP_ABI isMainThreadExt(const clap_host_t* host);
+    static bool CLAP_ABI isAudioThreadExt(const clap_host_t* host);
+    
+    // Params extension
+    static void CLAP_ABI paramsRescan(const clap_host_t* host, clap_param_rescan_flags flags);
+    static void CLAP_ABI paramsClear(const clap_host_t* host, clap_id paramId, clap_param_clear_flags flags);
+    static void CLAP_ABI paramsRequestFlush(const clap_host_t* host);
+    
+    // State extension
+    static void CLAP_ABI stateMarkDirty(const clap_host_t* host);
+    
+    // Helper to get Host from clap_host pointer
+    static Host* fromClapHost(const clap_host_t* host);
+    
+    // Thread safety assertions
+    void assertMainThread(const char* functionName);
+    void assertNotAudioThread(const char* functionName);
+    void setCallbackError(const std::string& error);
+    
+    clap_host_t clapHost_;
+    clap_host_thread_check_t threadCheckExt_;
+    clap_host_params_t paramsExt_;
+    clap_host_state_t stateExt_;
+    
+    std::thread::id mainThreadId_;
+    std::atomic<std::thread::id> audioThreadId_;
+    
+    mutable std::mutex errorMutex_;
+    std::optional<std::string> callbackError_;
+    
+    Plugin* currentPlugin_ = nullptr;
+    
+    std::atomic<bool> requestedCallback_{false};
+    std::atomic<bool> requestedRestart_{false};
+};
+
+} // namespace clap_validator
