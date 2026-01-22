@@ -8,8 +8,10 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 project(clap-cpp-validator VERSION 1.0.0 LANGUAGES C CXX)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(USE_ASAN "Use ASAN builds on gcc/clang mac/lin" OFF)
 
 # Add CLAP library
 add_subdirectory(libs/clap EXCLUDE_FROM_ALL)
@@ -51,3 +53,20 @@ elseif(WIN32)
     # Windows doesn't need extra libraries for dynamic loading
 endif()
 
+
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if (${USE_ASAN})
+        message(STATUS "Sanitizer is ON")
+    endif ()
+
+    add_compile_options(
+            $<$<BOOL:${USE_ASAN}>:-fsanitize=address>
+            $<$<BOOL:${USE_ASAN}>:-fsanitize=undefined>
+    )
+
+    add_link_options(
+            $<$<BOOL:${USE_ASAN}>:-fsanitize=address>
+            $<$<BOOL:${USE_ASAN}>:-fsanitize=undefined>
+    )
+endif ()
