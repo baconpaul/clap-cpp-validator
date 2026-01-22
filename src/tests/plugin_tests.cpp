@@ -778,22 +778,170 @@ TestResult PluginTests::testParamSetWrongNamespace(PluginLibrary &library,
             return TestResult::skipped(testName, description, "Plugin has no parameters");
         }
 
-        // Get first parameter info and its current value
-        clap_param_info_t paramInfo = {};
-        if (!paramsExt->get_info(plugin->clapPlugin(), 0, &paramInfo))
+        // Collect all parameter info and initial values
+        std::vector<clap_param_info_t> paramInfos(paramCount);
+        std::map<clap_id, double> initialParamValues;
+
+        for (uint32_t i = 0; i < paramCount; ++i)
         {
-            return TestResult::failed(testName, description, "Failed to get parameter info");
+            if (!paramsExt->get_info(plugin->clapPlugin(), i, &paramInfos[i]))
+            {
+                return TestResult::failed(testName, description, "Failed to get parameter info");
+            }
+
+            double value = 0.0;
+            if (!paramsExt->get_value(plugin->clapPlugin(), paramInfos[i].id, &value))
+            {
+                return TestResult::failed(testName, description, "Failed to get parameter value");
+            }
+            initialParamValues[paramInfos[i].id] = value;
         }
 
-        double originalValue = 0.0;
-        if (!paramsExt->get_value(plugin->clapPlugin(), paramInfo.id, &originalValue))
+        // Generate random parameter set events with WRONG namespace ID
+        constexpr uint16_t INCORRECT_NAMESPACE_ID = 0xb33f;
+
+        std::random_device rd;
+        std::mt19937 gen(rd());
+
+        std::vector<clap_event_param_value_t> paramEvents;
+        paramEvents.reserve(paramCount);
+
+        for (uint32_t i = 0; i < paramCount; ++i)
         {
-            return TestResult::failed(testName, description, "Failed to get parameter value");
+            const auto &info = paramInfos[i];
+
+            // Generate a random value within the parameter's range
+            std::uniform_real_distribution<double> dist(info.min_value, info.max_value);
+            double randomValue = dist(gen);
+
+            clap_event_param_value_t event = {};
+            event.header.size = sizeof(clap_event_param_value_t);
+            event.header.time = 0;
+            event.header.space_id = INCORRECT_NAMESPACE_ID; // Wrong namespace!
+            event.header.type = CLAP_EVENT_PARAM_VALUE;
+            event.header.flags = 0;
+            event.param_id = info.id;
+            event.cookie = info.cookie;
+            event.note_id = -1;
+            event.port_index = -1;
+            event.channel = -1;
+            event.key = -1;
+            event.value = randomValue;
+
+            paramEvents.push_back(event);
         }
 
-        // The test would send a param event with wrong namespace and verify value doesn't change
-        // For now, just verify we can read parameters correctly
-        return TestResult::success(testName, description);
+        const double sampleRate = 44100.0;
+        const uint32_t blockSize = BUFFER_SIZE;
+
+        {
+            AudioThreadGuard audioGuard(host);
+
+            if (!plugin->activate(sampleRate, blockSize, blockSize))
+            {
+                return TestResult::failed(testName, description, "Failed to activate plugin");
+            }
+
+            if (!plugin->startProcessing())
+            {
+                plugin->deactivate();
+                return TestResult::failed(testName, description, "Failed to start processing");
+            }
+
+            // Create buffers
+            std::vector<float> inputBuffer(blockSize, 0.0f);
+            std::vector<float> outputBuffer(blockSize, 0.0f);
+            float *inputPtrs[1] = {inputBuffer.data()};
+            float *outputPtrs[1] = {outputBuffer.data()};
+
+            clap_audio_buffer_t inputAudioBuffer = {};
+            inputAudioBuffer.data32 = inputPtrs;
+            inputAudioBuffer.channel_count = 1;
+
+            clap_audio_buffer_t outputAudioBuffer = {};
+            outputAudioBuffer.data32 = outputPtrs;
+            outputAudioBuffer.channel_count = 1;
+
+            // Set up input events with our wrong-namespace param events
+            struct EventContext
+            {
+                std::vector<clap_event_param_value_t> *events;
+            };
+            EventContext ctx{&paramEvents};
+
+            clap_input_events_t inEvents = {};
+            inEvents.ctx = &ctx;
+            inEvents.size = [](const clap_input_events_t *list) -> uint32_t
+            {
+                auto *context = static_cast<EventContext *>(list->ctx);
+                return static_cast<uint32_t>(context->events->size());
+            };
+            inEvents.get = [](const clap_input_events_t *list,
+                              uint32_t index) -> const clap_event_header_t *
+            {
+                auto *context = static_cast<EventContext *>(list->ctx);
+                if (index < context->events->size())
+                {
+                    return &(*context->events)[index].header;
+                }
+                return nullptr;
+            };
+
+            clap_output_events_t outEvents = {};
+            outEvents.try_push =
+                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
+            { return true; };
+
+            clap_process_t processData = {};
+            processData.frames_count = blockSize;
+            processData.audio_inputs = &inputAudioBuffer;
+            processData.audio_outputs = &outputAudioBuffer;
+            processData.audio_inputs_count = 1;
+            processData.audio_outputs_count = 1;
+            processData.in_events = &inEvents;
+            processData.out_events = &outEvents;
+
+            // Process once with the wrong-namespace events
+            clap_process_status status = plugin->process(&processData);
+            if (status == CLAP_PROCESS_ERROR)
+            {
+                plugin->stopProcessing();
+                plugin->deactivate();
+                return TestResult::failed(testName, description, "Process returned error");
+            }
+
+            plugin->stopProcessing();
+            plugin->deactivate();
+        }
+
+        // Check that parameter values have NOT changed
+        std::map<clap_id, double> actualParamValues;
+        for (uint32_t i = 0; i < paramCount; ++i)
+        {
+            double value = 0.0;
+            if (!paramsExt->get_value(plugin->clapPlugin(), paramInfos[i].id, &value))
+            {
+                return TestResult::failed(testName, description,
+                                          "Failed to get parameter value after processing");
+            }
+            actualParamValues[paramInfos[i].id] = value;
+        }
+
+        if (actualParamValues == initialParamValues)
+        {
+            return TestResult::success(testName, description);
+        }
+        else
+        {
+            return TestResult::failed(
+                testName, description,
+                "Sending events with type ID " + std::to_string(CLAP_EVENT_PARAM_VALUE) +
+                    " (CLAP_EVENT_PARAM_VALUE) and namespace ID 0x" +
+                    std::to_string(INCORRECT_NAMESPACE_ID) +
+                    " to the plugin caused its parameter values to change. "
+                    "This should not happen. The plugin may not be checking the event's "
+                    "namespace ID.");
+        }
     }
     catch (const std::exception &e)
     {
