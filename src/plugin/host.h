@@ -107,6 +107,37 @@ class Host : public std::enable_shared_from_this<Host>
     std::atomic<bool> requestedRestart_{false};
 };
 
+// RAII guard class to mark the current thread as the audio thread
+// Usage:
+//   {
+//       AudioThreadGuard guard(host);
+//       plugin->process(...);
+//   }
+class AudioThreadGuard
+{
+  public:
+    explicit AudioThreadGuard(Host &host) : host_(host)
+    {
+        host_.setAudioThread(std::this_thread::get_id());
+    }
+
+    explicit AudioThreadGuard(std::shared_ptr<Host> host) : host_(*host)
+    {
+        host_.setAudioThread(std::this_thread::get_id());
+    }
+
+    ~AudioThreadGuard() { host_.clearAudioThread(); }
+
+    // Non-copyable, non-movable
+    AudioThreadGuard(const AudioThreadGuard &) = delete;
+    AudioThreadGuard &operator=(const AudioThreadGuard &) = delete;
+    AudioThreadGuard(AudioThreadGuard &&) = delete;
+    AudioThreadGuard &operator=(AudioThreadGuard &&) = delete;
+
+  private:
+    Host &host_;
+};
+
 } // namespace clap_validator
 
 #endif // CLAPVALCPP_SRC_PLUGIN_HOST_H
