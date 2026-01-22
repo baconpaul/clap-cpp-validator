@@ -330,84 +330,89 @@ TestResult PluginTests::testProcessAudioOutOfPlaceBasic(PluginLibrary &library,
         const double sampleRate = 44100.0;
         const uint32_t blockSize = 512;
 
-        if (!plugin->activate(sampleRate, blockSize, blockSize))
         {
-            return TestResult::failed(testName, description, "Failed to activate plugin");
-        }
+            AudioThreadGuard audioGuard(host);
 
-        if (!plugin->startProcessing())
-        {
-            plugin->deactivate();
-            return TestResult::failed(testName, description, "Failed to start processing");
-        }
-
-        // Create simple process data
-        std::vector<float> inputBuffer(blockSize, 0.0f);
-        std::vector<float> outputBuffer(blockSize, 0.0f);
-
-        // Fill input with some test signal
-        for (uint32_t i = 0; i < blockSize; ++i)
-        {
-            inputBuffer[i] = static_cast<float>(i) / static_cast<float>(blockSize) - 0.5f;
-        }
-
-        float *inputPtrs[1] = {inputBuffer.data()};
-        float *outputPtrs[1] = {outputBuffer.data()};
-
-        clap_audio_buffer_t inputAudioBuffer = {};
-        inputAudioBuffer.data32 = inputPtrs;
-        inputAudioBuffer.channel_count = 1;
-        inputAudioBuffer.latency = 0;
-        inputAudioBuffer.constant_mask = 0;
-
-        clap_audio_buffer_t outputAudioBuffer = {};
-        outputAudioBuffer.data32 = outputPtrs;
-        outputAudioBuffer.channel_count = 1;
-        outputAudioBuffer.latency = 0;
-        outputAudioBuffer.constant_mask = 0;
-
-        // Create dummy empty input event queue
-        clap_input_events_t inEvents = {};
-        inEvents.ctx = nullptr;
-        inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
-        inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
-        { return nullptr; };
-
-        // Create dummy unwritable output event queue
-        clap_output_events_t outEvents = {};
-        outEvents.ctx = nullptr;
-        outEvents.try_push = [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-        { return false; };
-
-        clap_process_t processData = {};
-        processData.steady_time = 0;
-        processData.frames_count = blockSize;
-        processData.transport = nullptr;
-        processData.audio_inputs = &inputAudioBuffer;
-        processData.audio_outputs = &outputAudioBuffer;
-        processData.audio_inputs_count = 1;
-        processData.audio_outputs_count = 1;
-        processData.in_events = &inEvents;
-        processData.out_events = &outEvents;
-
-        clap_process_status status = plugin->process(&processData);
-
-        plugin->stopProcessing();
-        plugin->deactivate();
-
-        if (status == CLAP_PROCESS_ERROR)
-        {
-            return TestResult::failed(testName, description, "Process returned error");
-        }
-
-        // Check output for non-finite values
-        for (uint32_t i = 0; i < blockSize; ++i)
-        {
-            if (!std::isfinite(outputBuffer[i]))
+            if (!plugin->activate(sampleRate, blockSize, blockSize))
             {
-                return TestResult::failed(testName, description,
-                                          "Output contains non-finite value at sample " +
-                                              std::to_string(i));
+                return TestResult::failed(testName, description, "Failed to activate plugin");
+            }
+
+            if (!plugin->startProcessing())
+            {
+                plugin->deactivate();
+                return TestResult::failed(testName, description, "Failed to start processing");
+            }
+
+            // Create simple process data
+            std::vector<float> inputBuffer(blockSize, 0.0f);
+            std::vector<float> outputBuffer(blockSize, 0.0f);
+
+            // Fill input with some test signal
+            for (uint32_t i = 0; i < blockSize; ++i)
+            {
+                inputBuffer[i] = static_cast<float>(i) / static_cast<float>(blockSize) - 0.5f;
+            }
+
+            float *inputPtrs[1] = {inputBuffer.data()};
+            float *outputPtrs[1] = {outputBuffer.data()};
+
+            clap_audio_buffer_t inputAudioBuffer = {};
+            inputAudioBuffer.data32 = inputPtrs;
+            inputAudioBuffer.channel_count = 1;
+            inputAudioBuffer.latency = 0;
+            inputAudioBuffer.constant_mask = 0;
+
+            clap_audio_buffer_t outputAudioBuffer = {};
+            outputAudioBuffer.data32 = outputPtrs;
+            outputAudioBuffer.channel_count = 1;
+            outputAudioBuffer.latency = 0;
+            outputAudioBuffer.constant_mask = 0;
+
+            // Create dummy empty input event queue
+            clap_input_events_t inEvents = {};
+            inEvents.ctx = nullptr;
+            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
+            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
+            { return nullptr; };
+
+            // Create dummy unwritable output event queue
+            clap_output_events_t outEvents = {};
+            outEvents.ctx = nullptr;
+            outEvents.try_push =
+                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
+            { return false; };
+
+            clap_process_t processData = {};
+            processData.steady_time = 0;
+            processData.frames_count = blockSize;
+            processData.transport = nullptr;
+            processData.audio_inputs = &inputAudioBuffer;
+            processData.audio_outputs = &outputAudioBuffer;
+            processData.audio_inputs_count = 1;
+            processData.audio_outputs_count = 1;
+            processData.in_events = &inEvents;
+            processData.out_events = &outEvents;
+
+            clap_process_status status = plugin->process(&processData);
+
+            plugin->stopProcessing();
+            plugin->deactivate();
+
+            if (status == CLAP_PROCESS_ERROR)
+            {
+                return TestResult::failed(testName, description, "Process returned error");
+            }
+
+            // Check output for non-finite values
+            for (uint32_t i = 0; i < blockSize; ++i)
+            {
+                if (!std::isfinite(outputBuffer[i]))
+                {
+                    return TestResult::failed(testName, description,
+                                              "Output contains non-finite value at sample " +
+                                                  std::to_string(i));
+                }
             }
         }
 
@@ -508,52 +513,57 @@ TestResult PluginTests::testProcessNoteOutOfPlaceBasic(PluginLibrary &library,
         const double sampleRate = 44100.0;
         const uint32_t blockSize = BUFFER_SIZE;
 
-        if (!plugin->activate(sampleRate, blockSize, blockSize))
         {
-            return TestResult::failed(testName, description, "Failed to activate plugin");
-        }
+            AudioThreadGuard audioGuard(host);
 
-        if (!plugin->startProcessing())
-        {
+            if (!plugin->activate(sampleRate, blockSize, blockSize))
+            {
+                return TestResult::failed(testName, description, "Failed to activate plugin");
+            }
+
+            if (!plugin->startProcessing())
+            {
+                plugin->deactivate();
+                return TestResult::failed(testName, description, "Failed to start processing");
+            }
+
+            // Create buffers and process - simplified test
+            std::vector<float> inputBuffer(blockSize, 0.0f);
+            std::vector<float> outputBuffer(blockSize, 0.0f);
+            float *inputPtrs[1] = {inputBuffer.data()};
+            float *outputPtrs[1] = {outputBuffer.data()};
+
+            clap_audio_buffer_t inputAudioBuffer = {};
+            inputAudioBuffer.data32 = inputPtrs;
+            inputAudioBuffer.channel_count = 1;
+
+            clap_audio_buffer_t outputAudioBuffer = {};
+            outputAudioBuffer.data32 = outputPtrs;
+            outputAudioBuffer.channel_count = 1;
+
+            clap_input_events_t inEvents = {};
+            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
+            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
+            { return nullptr; };
+
+            clap_output_events_t outEvents = {};
+            outEvents.try_push =
+                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
+            { return false; };
+
+            clap_process_t processData = {};
+            processData.frames_count = blockSize;
+            processData.audio_inputs = &inputAudioBuffer;
+            processData.audio_outputs = &outputAudioBuffer;
+            processData.audio_inputs_count = 1;
+            processData.audio_outputs_count = 1;
+            processData.in_events = &inEvents;
+            processData.out_events = &outEvents;
+
+            plugin->process(&processData);
+            plugin->stopProcessing();
             plugin->deactivate();
-            return TestResult::failed(testName, description, "Failed to start processing");
         }
-
-        // Create buffers and process - simplified test
-        std::vector<float> inputBuffer(blockSize, 0.0f);
-        std::vector<float> outputBuffer(blockSize, 0.0f);
-        float *inputPtrs[1] = {inputBuffer.data()};
-        float *outputPtrs[1] = {outputBuffer.data()};
-
-        clap_audio_buffer_t inputAudioBuffer = {};
-        inputAudioBuffer.data32 = inputPtrs;
-        inputAudioBuffer.channel_count = 1;
-
-        clap_audio_buffer_t outputAudioBuffer = {};
-        outputAudioBuffer.data32 = outputPtrs;
-        outputAudioBuffer.channel_count = 1;
-
-        clap_input_events_t inEvents = {};
-        inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
-        inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
-        { return nullptr; };
-
-        clap_output_events_t outEvents = {};
-        outEvents.try_push = [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-        { return false; };
-
-        clap_process_t processData = {};
-        processData.frames_count = blockSize;
-        processData.audio_inputs = &inputAudioBuffer;
-        processData.audio_outputs = &outputAudioBuffer;
-        processData.audio_inputs_count = 1;
-        processData.audio_outputs_count = 1;
-        processData.in_events = &inEvents;
-        processData.out_events = &outEvents;
-
-        plugin->process(&processData);
-        plugin->stopProcessing();
-        plugin->deactivate();
 
         return TestResult::success(testName, description);
     }
@@ -631,98 +641,103 @@ TestResult PluginTests::testParamFuzzBasic(PluginLibrary &library, const std::st
         const double sampleRate = 44100.0;
         const uint32_t blockSize = BUFFER_SIZE;
 
-        if (!plugin->activate(sampleRate, blockSize, blockSize))
         {
-            return TestResult::failed(testName, description, "Failed to activate plugin");
-        }
+            AudioThreadGuard audioGuard(host);
 
-        if (!plugin->startProcessing())
-        {
-            plugin->deactivate();
-            return TestResult::failed(testName, description, "Failed to start processing");
-        }
-
-        std::random_device rd;
-        std::mt19937 gen(rd());
-
-        // Collect parameter info
-        std::vector<clap_param_info_t> paramInfos(paramCount);
-        for (uint32_t i = 0; i < paramCount; ++i)
-        {
-            paramsExt->get_info(plugin->clapPlugin(), i, &paramInfos[i]);
-        }
-
-        // Create buffers
-        std::vector<float> inputBuffer(blockSize, 0.0f);
-        std::vector<float> outputBuffer(blockSize, 0.0f);
-        float *inputPtrs[1] = {inputBuffer.data()};
-        float *outputPtrs[1] = {outputBuffer.data()};
-
-        clap_audio_buffer_t inputAudioBuffer = {};
-        inputAudioBuffer.data32 = inputPtrs;
-        inputAudioBuffer.channel_count = 1;
-
-        clap_audio_buffer_t outputAudioBuffer = {};
-        outputAudioBuffer.data32 = outputPtrs;
-        outputAudioBuffer.channel_count = 1;
-
-        clap_input_events_t inEvents = {};
-        inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
-        inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
-        { return nullptr; };
-
-        clap_output_events_t outEvents = {};
-        outEvents.try_push = [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-        { return false; };
-
-        clap_process_t processData = {};
-        processData.frames_count = blockSize;
-        processData.audio_inputs = &inputAudioBuffer;
-        processData.audio_outputs = &outputAudioBuffer;
-        processData.audio_inputs_count = 1;
-        processData.audio_outputs_count = 1;
-        processData.in_events = &inEvents;
-        processData.out_events = &outEvents;
-
-        // Run multiple permutations
-        for (size_t perm = 0; perm < FUZZ_NUM_PERMUTATIONS; ++perm)
-        {
-            // Randomize input
-            std::uniform_real_distribution<float> audioDist(-1.0f, 1.0f);
-            for (uint32_t i = 0; i < blockSize; ++i)
+            if (!plugin->activate(sampleRate, blockSize, blockSize))
             {
-                inputBuffer[i] = audioDist(gen);
+                return TestResult::failed(testName, description, "Failed to activate plugin");
             }
 
-            // Process
-            for (size_t run = 0; run < FUZZ_RUNS_PER_PERMUTATION; ++run)
+            if (!plugin->startProcessing())
             {
-                clap_process_status status = plugin->process(&processData);
-                if (status == CLAP_PROCESS_ERROR)
-                {
-                    plugin->stopProcessing();
-                    plugin->deactivate();
-                    return TestResult::failed(testName, description,
-                                              "Process returned error during fuzz test");
-                }
+                plugin->deactivate();
+                return TestResult::failed(testName, description, "Failed to start processing");
+            }
 
-                // Check for non-finite values
+            std::random_device rd;
+            std::mt19937 gen(rd());
+
+            // Collect parameter info
+            std::vector<clap_param_info_t> paramInfos(paramCount);
+            for (uint32_t i = 0; i < paramCount; ++i)
+            {
+                paramsExt->get_info(plugin->clapPlugin(), i, &paramInfos[i]);
+            }
+
+            // Create buffers
+            std::vector<float> inputBuffer(blockSize, 0.0f);
+            std::vector<float> outputBuffer(blockSize, 0.0f);
+            float *inputPtrs[1] = {inputBuffer.data()};
+            float *outputPtrs[1] = {outputBuffer.data()};
+
+            clap_audio_buffer_t inputAudioBuffer = {};
+            inputAudioBuffer.data32 = inputPtrs;
+            inputAudioBuffer.channel_count = 1;
+
+            clap_audio_buffer_t outputAudioBuffer = {};
+            outputAudioBuffer.data32 = outputPtrs;
+            outputAudioBuffer.channel_count = 1;
+
+            clap_input_events_t inEvents = {};
+            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
+            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
+            { return nullptr; };
+
+            clap_output_events_t outEvents = {};
+            outEvents.try_push =
+                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
+            { return false; };
+
+            clap_process_t processData = {};
+            processData.frames_count = blockSize;
+            processData.audio_inputs = &inputAudioBuffer;
+            processData.audio_outputs = &outputAudioBuffer;
+            processData.audio_inputs_count = 1;
+            processData.audio_outputs_count = 1;
+            processData.in_events = &inEvents;
+            processData.out_events = &outEvents;
+
+            // Run multiple permutations
+            for (size_t perm = 0; perm < FUZZ_NUM_PERMUTATIONS; ++perm)
+            {
+                // Randomize input
+                std::uniform_real_distribution<float> audioDist(-1.0f, 1.0f);
                 for (uint32_t i = 0; i < blockSize; ++i)
                 {
-                    if (!std::isfinite(outputBuffer[i]))
+                    inputBuffer[i] = audioDist(gen);
+                }
+
+                // Process
+                for (size_t run = 0; run < FUZZ_RUNS_PER_PERMUTATION; ++run)
+                {
+                    clap_process_status status = plugin->process(&processData);
+                    if (status == CLAP_PROCESS_ERROR)
                     {
                         plugin->stopProcessing();
                         plugin->deactivate();
-                        return TestResult::failed(
-                            testName, description,
-                            "Output contains non-finite value during fuzz test");
+                        return TestResult::failed(testName, description,
+                                                  "Process returned error during fuzz test");
+                    }
+
+                    // Check for non-finite values
+                    for (uint32_t i = 0; i < blockSize; ++i)
+                    {
+                        if (!std::isfinite(outputBuffer[i]))
+                        {
+                            plugin->stopProcessing();
+                            plugin->deactivate();
+                            return TestResult::failed(
+                                testName, description,
+                                "Output contains non-finite value during fuzz test");
+                        }
                     }
                 }
             }
-        }
 
-        plugin->stopProcessing();
-        plugin->deactivate();
+            plugin->stopProcessing();
+            plugin->deactivate();
+        }
 
         return TestResult::success(testName, description);
     }
