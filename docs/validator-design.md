@@ -171,8 +171,21 @@ the factory's.
 
 ## Execution model
 
-Checks currently run in-process. _Out-of-process crash isolation (the `run-single-test` subcommand
-and subprocess spawn) is to be written in Phase 5._
+By default each check runs in its own child process, so a plugin that crashes takes down only that
+one check (reported as `Crashed`) instead of the whole validator. The runner (`commands/validate.cpp`)
+enumerates the plugins in the parent, then for each check spawns the validator binary again with the
+hidden `run-single-test` subcommand:
+
+```
+run-single-test --output-file <file> <library|plugin> <path> [<plugin-id>] <test-name>
+```
+
+The child runs the single check in-process and writes its result (status, name, optional details) to
+the given file using a simple self-delimiting text format — no JSON escaping needed for multi-line
+details. The parent waits on the child: a clean exit reads the result back; a non-zero exit or a
+terminating signal becomes a `Crashed` result naming the signal. `--in-process` forces everything
+into a single process (the old behavior, where a crash is fatal). Windows always runs in-process for
+now — the subprocess path is POSIX-only (`fork`/`execvp`/`waitpid`).
 
 ## The checks
 

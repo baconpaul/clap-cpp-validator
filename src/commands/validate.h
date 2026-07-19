@@ -33,7 +33,29 @@ struct ValidatorSettings
     bool invertFilter = false;
     bool json = false;
     bool onlyFailed = false;
-    bool inProcess = true; // Default to in-process for simplicity
+    // When false (the default) each check runs in a child process so a crashing plugin is reported
+    // as Crashed instead of taking down the validator. On Windows this always runs in-process.
+    bool inProcess = false;
+    // Path to this executable, used to re-spawn it for out-of-process checks.
+    std::string executablePath;
+};
+
+// Whether a check operates on the whole library or a single plugin instance.
+enum class TestKind
+{
+    Library,
+    Plugin
+};
+
+// Settings for the hidden `run-single-test` subcommand, which runs one check in-process and writes
+// its result to a file. This is what the out-of-process runner spawns.
+struct SingleTestSettings
+{
+    TestKind kind = TestKind::Library;
+    std::filesystem::path path;
+    std::string pluginId; // only used for TestKind::Plugin
+    std::string testName;
+    std::filesystem::path outputFile;
 };
 
 namespace commands
@@ -41,6 +63,9 @@ namespace commands
 
 // Run validation on the specified plugins
 int validate(const ValidatorSettings &settings);
+
+// Run a single check in-process and write its result to settings.outputFile. Returns 0 on success.
+int runSingleTest(const SingleTestSettings &settings);
 
 } // namespace commands
 } // namespace clap_validator

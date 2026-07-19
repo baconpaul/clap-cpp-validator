@@ -98,9 +98,64 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (command == "run-single-test")
+    {
+        // Hidden subcommand used by the out-of-process runner. It runs one check in-process and
+        // writes the result to a file:
+        //   run-single-test --output-file <file> <library|plugin> <path> [<plugin-id>] <test-name>
+        SingleTestSettings settings;
+        std::vector<std::string> positional;
+        for (int i = 2; i < argc; ++i)
+        {
+            std::string arg = argv[i];
+            if (arg == "--output-file" && i + 1 < argc)
+            {
+                settings.outputFile = argv[++i];
+            }
+            else
+            {
+                positional.push_back(arg);
+            }
+        }
+
+        if (settings.outputFile.empty() || positional.size() < 3)
+        {
+            std::cerr << "Error: run-single-test requires --output-file <file> <library|plugin> "
+                         "<path> [<plugin-id>] <test-name>\n";
+            return 1;
+        }
+
+        const std::string &kind = positional[0];
+        settings.path = positional[1];
+        if (kind == "library")
+        {
+            settings.kind = TestKind::Library;
+            settings.testName = positional[2];
+        }
+        else if (kind == "plugin")
+        {
+            if (positional.size() < 4)
+            {
+                std::cerr << "Error: run-single-test for a plugin requires a plugin id\n";
+                return 1;
+            }
+            settings.kind = TestKind::Plugin;
+            settings.pluginId = positional[2];
+            settings.testName = positional[3];
+        }
+        else
+        {
+            std::cerr << "Error: unknown run-single-test kind '" << kind << "'\n";
+            return 1;
+        }
+
+        return commands::runSingleTest(settings);
+    }
+
     if (command == "validate")
     {
         ValidatorSettings settings;
+        settings.executablePath = argv[0];
 
         // Parse arguments
         for (int i = 2; i < argc; ++i)
