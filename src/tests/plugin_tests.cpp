@@ -106,14 +106,18 @@ std::map<clap_id, double> getAllParamValues(const ParamsExt &params, const Param
     return values;
 }
 
+// Set by PluginTests::setFullOutput; when true, detail lists are shown in full.
+bool g_fullOutput = false;
+
 // Build a human-readable list of the parameters whose values differ. To keep the output readable
-// when many parameters mismatch, only the first few are listed, followed by a count of the rest.
-// The result is a multi-line block (each entry on its own line) meant to follow a trailing ':'.
+// when many parameters mismatch, only the first few are listed, followed by a count of the rest,
+// unless full output is requested. The result is a multi-line block (each entry on its own line)
+// meant to follow a trailing ':'.
 std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
                                     const std::map<clap_id, double> &expected,
                                     const ParamInfoMap &infos)
 {
-    constexpr size_t kMaxShown = 7;
+    const size_t kMaxShown = g_fullOutput ? std::numeric_limits<size_t>::max() : 7;
 
     std::string result;
     size_t shown = 0;
@@ -143,6 +147,8 @@ std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
 }
 
 } // namespace
+
+void PluginTests::setFullOutput(bool full) { g_fullOutput = full; }
 
 std::vector<TestCaseInfo> PluginTests::getAllTests()
 {

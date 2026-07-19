@@ -36,6 +36,11 @@ struct ValidatorSettings
     // When false (the default) each check runs in a child process so a crashing plugin is reported
     // as Crashed instead of taking down the validator. On Windows this always runs in-process.
     bool inProcess = false;
+    // When true, show untruncated detail lists (e.g. every mismatching parameter).
+    bool fullOutput = false;
+    // When true (the default) the plugin's own stdout/stderr is hushed so it doesn't intersperse
+    // with the validator's output.
+    bool suppressPluginStdout = true;
     // Path to this executable, used to re-spawn it for out-of-process checks.
     std::string executablePath;
 };
@@ -56,6 +61,7 @@ struct SingleTestSettings
     std::string pluginId; // only used for TestKind::Plugin
     std::string testName;
     std::filesystem::path outputFile;
+    bool fullOutput = false;
 };
 
 namespace commands

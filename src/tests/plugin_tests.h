@@ -37,6 +37,10 @@ class PluginTests
     static TestResult runTest(const std::string &testName, PluginLibrary &library,
                               const std::string &pluginId);
 
+    // When enabled, detail lists (e.g. parameter mismatches) are shown in full rather than
+    // truncated. Set before running checks.
+    static void setFullOutput(bool full);
+
     // Descriptor tests
     static TestResult testDescriptorConsistency(PluginLibrary &library,
                                                 const std::string &pluginId);
@@ -62,7 +66,7 @@ class PluginTests
     static TestResult testStateReproducibilityBasic(PluginLibrary &library,
                                                     const std::string &pluginId);
     static TestResult testStateReproducibilityNullCookies(PluginLibrary &library,
-                                                         const std::string &pluginId);
+                                                          const std::string &pluginId);
     static TestResult testStateReproducibilityFlush(PluginLibrary &library,
                                                     const std::string &pluginId);
     static TestResult testStateBufferedStreams(PluginLibrary &library, const std::string &pluginId);

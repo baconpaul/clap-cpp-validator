@@ -103,8 +103,12 @@ std::string jsonEscape(const std::string &s)
 class OutputSilencer
 {
   public:
-    OutputSilencer()
+    explicit OutputSilencer(bool enabled = true)
     {
+        if (!enabled)
+        {
+            return;
+        }
 #ifndef _WIN32
         std::cout.flush();
         std::fflush(stdout);
@@ -232,6 +236,10 @@ TestResult runTestOutOfProcess(const ValidatorSettings &settings, TestKind kind,
     args.push_back("run-single-test");
     args.push_back("--output-file");
     args.push_back(outFile.string());
+    if (settings.fullOutput)
+    {
+        args.push_back("--full-output");
+    }
     args.push_back(kind == TestKind::Library ? "library" : "plugin");
     args.push_back(path.string());
     if (kind == TestKind::Plugin)
@@ -256,16 +264,19 @@ TestResult runTestOutOfProcess(const ValidatorSettings &settings, TestKind kind,
     }
     if (pid == 0)
     {
-        // Silence the plugin's own stdout/stderr chatter so it doesn't intersperse with the
-        // validator's output. The child reports its result through the output file, and a crash is
-        // reported by the parent via the exit signal, so nothing useful is lost. Use --in-process
-        // to see the plugin's own output.
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0)
+        // Unless the plugin's own output was requested, silence its stdout/stderr chatter so it
+        // doesn't intersperse with the validator's output. The child reports its result through the
+        // output file, and a crash is reported by the parent via the exit signal, so nothing useful
+        // is lost.
+        if (settings.suppressPluginStdout)
         {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0)
+            {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
         }
         execvp(settings.executablePath.c_str(), argv.data());
         _exit(127); // execvp only returns on failure
@@ -415,6 +426,9 @@ int validate(const ValidatorSettings &settings)
     auto libraryTests = PluginLibraryTests::getAllTests();
     auto pluginTests = PluginTests::getAllTests();
 
+    // Controls detail truncation for checks run in this process (the --in-process path).
+    PluginTests::setFullOutput(settings.fullOutput);
+
     if (settings.json)
     {
         std::cout << "{\n  \"results\": [\n";
@@ -494,7 +508,7 @@ int validate(const ValidatorSettings &settings)
             {
                 // The plugin often prints to stdout/stderr while its entry point initializes; hush
                 // it so it doesn't intersperse with the validator's output.
-                OutputSilencer silence;
+                OutputSilencer silence(settings.suppressPluginStdout);
                 library = PluginLibrary::load(path);
                 metadata = library->metadata();
             }
@@ -612,6 +626,8 @@ int validate(const ValidatorSettings &settings)
 
 int runSingleTest(const SingleTestSettings &settings)
 {
+    PluginTests::setFullOutput(settings.fullOutput);
+
     TestResult result = TestResult::failed(settings.testName, "", "not run");
     try
     {
