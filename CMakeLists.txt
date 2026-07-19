@@ -27,8 +27,16 @@ add_executable(clap-validator
     src/plugin/host.h
     src/plugin/instance.cpp
     src/plugin/instance.h
+    src/plugin/process.cpp
+    src/plugin/process.h
+    src/plugin/ext.cpp
+    src/plugin/ext.h
     src/tests/test_case.cpp
     src/tests/test_case.h
+    src/tests/rng.cpp
+    src/tests/rng.h
+    src/tests/processing_test.cpp
+    src/tests/processing_test.h
     src/tests/plugin_library_tests.cpp
     src/tests/plugin_library_tests.h
     src/tests/plugin_tests.cpp

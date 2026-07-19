@@ -201,4 +201,12 @@ const void *Plugin::getExtension(const char *extensionId) const
     return plugin_->get_extension(plugin_, extensionId);
 }
 
+void Plugin::onMainThread()
+{
+    if (plugin_ && plugin_->on_main_thread)
+    {
+        plugin_->on_main_thread(plugin_);
+    }
+}
+
 } // namespace clap_validator

@@ -72,6 +72,10 @@ class Plugin
     // Get an extension from the plugin
     const void *getExtension(const char *extensionId) const;
 
+    // Invoke the plugin's on_main_thread callback, if it provides one. Must be called from the
+    // main thread.
+    void onMainThread();
+
     // Get the current status
     PluginStatus status() const { return status_; }
 

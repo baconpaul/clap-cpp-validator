@@ -110,8 +110,7 @@ void Host::handleCallbacksOnce()
 {
     if (currentPlugin_ && requestedCallback_.exchange(false))
     {
-        // Call on_main_thread on the plugin
-        // This would need access to the plugin's clap_plugin pointer
+        currentPlugin_->onMainThread();
     }
 }
 
@@ -150,8 +149,11 @@ void CLAP_ABI Host::requestRestart(const clap_host_t *host)
 
 void CLAP_ABI Host::requestProcess(const clap_host_t *host)
 {
-    // Not implemented for validator
-    (void)host;
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->requestedProcess_.store(true);
+    }
 }
 
 void CLAP_ABI Host::requestCallback(const clap_host_t *host)
