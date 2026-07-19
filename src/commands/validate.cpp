@@ -18,6 +18,7 @@
 #include "../tests/plugin_tests.h"
 #include "../util.h"
 #include <atomic>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -27,6 +28,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -53,6 +55,99 @@ TestStatusCode statusCodeFromString(const std::string &token)
         return TestStatusCode::Warning;
     return TestStatusCode::Failed;
 }
+
+// Escape a string for embedding in a JSON string literal. Detail strings can contain quotes and,
+// now that mismatch lists are multi-line, newlines - both of which would otherwise produce invalid
+// JSON.
+std::string jsonEscape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+    {
+        switch (c)
+        {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20)
+            {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                out += buf;
+            }
+            else
+            {
+                out += c;
+            }
+        }
+    }
+    return out;
+}
+
+// RAII helper that redirects stdout and stderr to /dev/null for its lifetime, used to hush a
+// plugin's chatter while the parent loads a library to enumerate its plugins. No-op on Windows.
+class OutputSilencer
+{
+  public:
+    OutputSilencer()
+    {
+#ifndef _WIN32
+        std::cout.flush();
+        std::fflush(stdout);
+        std::fflush(stderr);
+        savedOut_ = dup(STDOUT_FILENO);
+        savedErr_ = dup(STDERR_FILENO);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0)
+        {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+#endif
+    }
+
+    ~OutputSilencer()
+    {
+#ifndef _WIN32
+        std::fflush(stdout);
+        std::fflush(stderr);
+        if (savedOut_ >= 0)
+        {
+            dup2(savedOut_, STDOUT_FILENO);
+            close(savedOut_);
+        }
+        if (savedErr_ >= 0)
+        {
+            dup2(savedErr_, STDERR_FILENO);
+            close(savedErr_);
+        }
+#endif
+    }
+
+    OutputSilencer(const OutputSilencer &) = delete;
+    OutputSilencer &operator=(const OutputSilencer &) = delete;
+
+  private:
+#ifndef _WIN32
+    int savedOut_ = -1;
+    int savedErr_ = -1;
+#endif
+};
 
 // Serialize a result to the inter-process result file. The format is deliberately simple and
 // self-delimiting (status line, name line, a details marker line, then the raw details) so
@@ -161,6 +256,17 @@ TestResult runTestOutOfProcess(const ValidatorSettings &settings, TestKind kind,
     }
     if (pid == 0)
     {
+        // Silence the plugin's own stdout/stderr chatter so it doesn't intersperse with the
+        // validator's output. The child reports its result through the output file, and a crash is
+        // reported by the parent via the exit signal, so nothing useful is lost. Use --in-process
+        // to see the plugin's own output.
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0)
+        {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
         execvp(settings.executablePath.c_str(), argv.data());
         _exit(127); // execvp only returns on failure
     }
@@ -276,7 +382,19 @@ void printTestResult(const TestResult &result, bool json, bool onlyFailed)
 
     if (result.details)
     {
-        std::cout << "\n           " << *result.details;
+        // Indent the details, and every continuation line of a multi-line detail block, so the
+        // output stays aligned instead of dumping a wall of text at column zero.
+        const std::string indent = "           ";
+        std::string rendered;
+        for (char c : *result.details)
+        {
+            rendered += c;
+            if (c == '\n')
+            {
+                rendered += indent;
+            }
+        }
+        std::cout << "\n" << indent << rendered;
     }
     std::cout << "\n";
 }
@@ -358,7 +476,7 @@ int validate(const ValidatorSettings &settings)
                 std::cout << "      \"status\": \"" << statusCodeToString(result.status) << "\"";
                 if (result.details)
                 {
-                    std::cout << ",\n      \"details\": \"" << *result.details << "\"";
+                    std::cout << ",\n      \"details\": \"" << jsonEscape(*result.details) << "\"";
                 }
                 std::cout << "\n    }";
             }
@@ -371,8 +489,15 @@ int validate(const ValidatorSettings &settings)
         // Load the library to run per-plugin tests
         try
         {
-            auto library = PluginLibrary::load(path);
-            auto metadata = library->metadata();
+            std::unique_ptr<PluginLibrary> library;
+            PluginLibraryMetadata metadata;
+            {
+                // The plugin often prints to stdout/stderr while its entry point initializes; hush
+                // it so it doesn't intersperse with the validator's output.
+                OutputSilencer silence;
+                library = PluginLibrary::load(path);
+                metadata = library->metadata();
+            }
 
             if (!isVersionCompatible(metadata.clapVersion()))
             {
@@ -440,7 +565,8 @@ int validate(const ValidatorSettings &settings)
                                   << "\"";
                         if (result.details)
                         {
-                            std::cout << ",\n      \"details\": \"" << *result.details << "\"";
+                            std::cout << ",\n      \"details\": \"" << jsonEscape(*result.details)
+                                      << "\"";
                         }
                         std::cout << "\n    }";
                     }

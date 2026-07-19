@@ -106,26 +106,38 @@ std::map<clap_id, double> getAllParamValues(const ParamsExt &params, const Param
     return values;
 }
 
-// Build a human-readable list of the parameters whose values differ.
+// Build a human-readable list of the parameters whose values differ. To keep the output readable
+// when many parameters mismatch, only the first few are listed, followed by a count of the rest.
+// The result is a multi-line block (each entry on its own line) meant to follow a trailing ':'.
 std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
                                     const std::map<clap_id, double> &expected,
                                     const ParamInfoMap &infos)
 {
+    constexpr size_t kMaxShown = 7;
+
     std::string result;
+    size_t shown = 0;
+    size_t total = 0;
     for (const auto &[id, actualValue] : actual)
     {
         auto it = expected.find(id);
         double expectedValue = it != expected.end() ? it->second : 0.0;
-        if (actualValue != expectedValue)
+        if (actualValue == expectedValue)
         {
-            if (!result.empty())
-            {
-                result += ", ";
-            }
+            continue;
+        }
+        total++;
+        if (shown < kMaxShown)
+        {
+            shown++;
             std::string name = infos.count(id) ? infos.at(id).name : std::string();
-            result += "parameter " + std::to_string(id) + " ('" + name + "'), expected " +
+            result += "\n  - parameter " + std::to_string(id) + " ('" + name + "'): expected " +
                       std::to_string(expectedValue) + ", actual " + std::to_string(actualValue);
         }
+    }
+    if (total > shown)
+    {
+        result += "\n  ... and " + std::to_string(total - shown) + " more";
     }
     return result;
 }
@@ -1095,8 +1107,8 @@ TestResult PluginTests::testStateReproducibilityImpl(PluginLibrary &library,
         {
             throw std::runtime_error(
                 "After reloading the state, the plugin's parameter values do not match the saved "
-                "values. The mismatching values are " +
-                formatMismatchingValues(actualValues, expectedValues, params2->info()) + ".");
+                "values:" +
+                formatMismatchingValues(actualValues, expectedValues, params2->info()));
         }
 
         std::vector<uint8_t> actualState = saveState(stateExt2, plugin2->clapPlugin());
@@ -1246,9 +1258,8 @@ TestResult PluginTests::testStateReproducibilityFlush(PluginLibrary &library,
         {
             throw std::runtime_error(
                 "Setting the same parameter values through flush() and through the process "
-                "function "
-                "results in different reported values. The mismatching values are " +
-                formatMismatchingValues(actualValues, expectedValues, paramInfos2) + ".");
+                "function results in different reported values:" +
+                formatMismatchingValues(actualValues, expectedValues, paramInfos2));
         }
 
         std::vector<uint8_t> actualState = saveState(stateExt2, plugin2->clapPlugin());
@@ -1376,8 +1387,8 @@ TestResult PluginTests::testStateBufferedStreams(PluginLibrary &library,
         {
             throw std::runtime_error(
                 "After reloading the state with buffered reads, the plugin's parameter values do "
-                "not match the saved values. The mismatching values are " +
-                formatMismatchingValues(actualValues, expectedValues, params2->info()) + ".");
+                "not match the saved values:" +
+                formatMismatchingValues(actualValues, expectedValues, params2->info()));
         }
 
         std::vector<uint8_t> actualState =
