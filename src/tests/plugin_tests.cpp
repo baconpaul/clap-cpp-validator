@@ -16,6 +16,11 @@
 #include "../plugin/library.h"
 #include "../plugin/host.h"
 #include "../plugin/instance.h"
+#include "../plugin/process.h"
+#include "../plugin/ext.h"
+#include "../util.h"
+#include "rng.h"
+#include "processing_test.h"
 #include <set>
 #include <cmath>
 #include <cstring>
@@ -40,7 +45,8 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         // Processing tests
         {"process-audio-out-of-place-basic",
          "Processes random audio through the plugin with its default parameter values and tests "
-         "whether the output does not contain any non-finite or subnormal values. Uses out-of-place "
+         "whether the output does not contain any non-finite or subnormal values. Uses "
+         "out-of-place "
          "audio processing."},
         {"process-note-out-of-place-basic",
          "Sends audio and random note and MIDI events to the plugin with its default parameter "
@@ -154,7 +160,9 @@ TestResult PluginTests::testDescriptorConsistency(PluginLibrary &library,
                                                   const std::string &pluginId)
 {
     const std::string testName = "descriptor-consistency";
-    const std::string description = "Plugin descriptor consistency check.";
+    const std::string description =
+        "The plugin descriptor returned from the plugin factory and the plugin descriptor stored "
+        "on the 'clap_plugin' object should be equivalent.";
 
     try
     {
@@ -166,43 +174,78 @@ TestResult PluginTests::testDescriptorConsistency(PluginLibrary &library,
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        // Get the descriptor from the plugin instance
         const clap_plugin_descriptor_t *instanceDesc = plugin->descriptor();
         if (!instanceDesc)
         {
             return TestResult::failed(testName, description, "Plugin instance has no descriptor");
         }
 
-        // Get the descriptor from the factory
-        auto metadata = library.metadata();
-        const PluginMetadata *factoryMeta = nullptr;
-        for (const auto &pm : metadata.plugins)
+        // Find the matching descriptor straight from the factory so we can compare every field.
+        const clap_plugin_factory_t *factory = library.getPluginFactory();
+        if (!factory)
         {
-            if (pm.id == pluginId)
+            return TestResult::failed(testName, description, "Library has no plugin factory");
+        }
+        const clap_plugin_descriptor_t *factoryDesc = nullptr;
+        uint32_t count = factory->get_plugin_count(factory);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const clap_plugin_descriptor_t *d = factory->get_plugin_descriptor(factory, i);
+            if (d && d->id && pluginId == d->id)
             {
-                factoryMeta = &pm;
+                factoryDesc = d;
                 break;
             }
         }
-
-        if (!factoryMeta)
+        if (!factoryDesc)
         {
             return TestResult::failed(testName, description, "Plugin ID not found in factory");
         }
 
-        // Compare the descriptors
-        if (factoryMeta->id != instanceDesc->id)
+        // Compare a single (possibly null) descriptor string field.
+        auto compareField = [&](const char *fieldName, const char *factoryValue,
+                                const char *instanceValue) -> std::optional<std::string>
         {
-            return TestResult::failed(testName, description,
-                                      "Plugin ID mismatch: factory='" + factoryMeta->id +
-                                          "', instance='" + instanceDesc->id + "'");
+            bool factoryNull = factoryValue == nullptr;
+            bool instanceNull = instanceValue == nullptr;
+            if (factoryNull != instanceNull ||
+                (!factoryNull && std::strcmp(factoryValue, instanceValue) != 0))
+            {
+                return std::string("The '") + fieldName +
+                       "' field differs between the factory descriptor ('" +
+                       (factoryNull ? "<null>" : factoryValue) +
+                       "') and the instance descriptor ('" +
+                       (instanceNull ? "<null>" : instanceValue) + "').";
+            }
+            return std::nullopt;
+        };
+
+        std::optional<std::string> mismatch;
+        if (!(mismatch = compareField("id", factoryDesc->id, instanceDesc->id)) &&
+            !(mismatch = compareField("name", factoryDesc->name, instanceDesc->name)) &&
+            !(mismatch = compareField("vendor", factoryDesc->vendor, instanceDesc->vendor)) &&
+            !(mismatch = compareField("url", factoryDesc->url, instanceDesc->url)) &&
+            !(mismatch =
+                  compareField("manual_url", factoryDesc->manual_url, instanceDesc->manual_url)) &&
+            !(mismatch = compareField("support_url", factoryDesc->support_url,
+                                      instanceDesc->support_url)) &&
+            !(mismatch = compareField("version", factoryDesc->version, instanceDesc->version)) &&
+            !(mismatch =
+                  compareField("description", factoryDesc->description, instanceDesc->description)))
+        {
+            // All scalar fields matched; now compare the features array in order.
+            std::vector<std::string> factoryFeatures = cstrArrayToVector(factoryDesc->features);
+            std::vector<std::string> instanceFeatures = cstrArrayToVector(instanceDesc->features);
+            if (factoryFeatures != instanceFeatures)
+            {
+                mismatch = std::string("The 'features' arrays differ between the factory and "
+                                       "instance descriptors.");
+            }
         }
 
-        if (factoryMeta->name != instanceDesc->name)
+        if (mismatch)
         {
-            return TestResult::failed(testName, description,
-                                      "Plugin name mismatch: factory='" + factoryMeta->name +
-                                          "', instance='" + instanceDesc->name + "'");
+            return TestResult::failed(testName, description, *mismatch);
         }
 
         return TestResult::success(testName, description);
@@ -315,107 +358,39 @@ TestResult PluginTests::testProcessAudioOutOfPlaceBasic(PluginLibrary &library,
                                                         const std::string &pluginId)
 {
     const std::string testName = "process-audio-out-of-place-basic";
-    const std::string description = "Basic out-of-place audio processing test.";
+    const std::string description =
+        "Processes random audio through the plugin with its default parameter values and tests "
+        "whether the output does not contain any non-finite or subnormal values. Uses out-of-place "
+        "audio processing.";
 
     try
     {
+        Prng prng = newPrng();
+
         auto host = std::make_shared<Host>();
         auto plugin = library.createPlugin(pluginId, host);
-
         if (!plugin->init())
         {
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        const double sampleRate = 44100.0;
-        const uint32_t blockSize = 512;
-
+        auto audioConfig = AudioPortConfig::query(*plugin);
+        if (!audioConfig)
         {
-            AudioThreadGuard audioGuard(host);
-
-            if (!plugin->activate(sampleRate, blockSize, blockSize))
-            {
-                return TestResult::failed(testName, description, "Failed to activate plugin");
-            }
-
-            if (!plugin->startProcessing())
-            {
-                plugin->deactivate();
-                return TestResult::failed(testName, description, "Failed to start processing");
-            }
-
-            // Create simple process data
-            std::vector<float> inputBuffer(blockSize, 0.0f);
-            std::vector<float> outputBuffer(blockSize, 0.0f);
-
-            // Fill input with some test signal
-            for (uint32_t i = 0; i < blockSize; ++i)
-            {
-                inputBuffer[i] = static_cast<float>(i) / static_cast<float>(blockSize) - 0.5f;
-            }
-
-            float *inputPtrs[1] = {inputBuffer.data()};
-            float *outputPtrs[1] = {outputBuffer.data()};
-
-            clap_audio_buffer_t inputAudioBuffer = {};
-            inputAudioBuffer.data32 = inputPtrs;
-            inputAudioBuffer.channel_count = 1;
-            inputAudioBuffer.latency = 0;
-            inputAudioBuffer.constant_mask = 0;
-
-            clap_audio_buffer_t outputAudioBuffer = {};
-            outputAudioBuffer.data32 = outputPtrs;
-            outputAudioBuffer.channel_count = 1;
-            outputAudioBuffer.latency = 0;
-            outputAudioBuffer.constant_mask = 0;
-
-            // Create dummy empty input event queue
-            clap_input_events_t inEvents = {};
-            inEvents.ctx = nullptr;
-            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
-            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
-            { return nullptr; };
-
-            // Create dummy unwritable output event queue
-            clap_output_events_t outEvents = {};
-            outEvents.ctx = nullptr;
-            outEvents.try_push =
-                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-            { return false; };
-
-            clap_process_t processData = {};
-            processData.steady_time = 0;
-            processData.frames_count = blockSize;
-            processData.transport = nullptr;
-            processData.audio_inputs = &inputAudioBuffer;
-            processData.audio_outputs = &outputAudioBuffer;
-            processData.audio_inputs_count = 1;
-            processData.audio_outputs_count = 1;
-            processData.in_events = &inEvents;
-            processData.out_events = &outEvents;
-
-            clap_process_status status = plugin->process(&processData);
-
-            plugin->stopProcessing();
-            plugin->deactivate();
-
-            if (status == CLAP_PROCESS_ERROR)
-            {
-                return TestResult::failed(testName, description, "Process returned error");
-            }
-
-            // Check output for non-finite values
-            for (uint32_t i = 0; i < blockSize; ++i)
-            {
-                if (!std::isfinite(outputBuffer[i]))
-                {
-                    return TestResult::failed(testName, description,
-                                              "Output contains non-finite value at sample " +
-                                                  std::to_string(i));
-                }
-            }
+            return TestResult::skipped(
+                testName, description,
+                "The plugin does not implement the 'audio-ports' extension.");
         }
+        host->handleCallbacksOnce();
 
+        AudioBuffers buffers(*audioConfig, BUFFER_SIZE);
+        ProcessingTest processingTest(*plugin, host, buffers);
+        processingTest.run(5, ProcessConfig{}, [&](ProcessData &) { buffers.randomize(prng); });
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
         return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
@@ -481,90 +456,51 @@ TestResult PluginTests::testProcessNoteOutOfPlaceBasic(PluginLibrary &library,
                                                        const std::string &pluginId)
 {
     const std::string testName = "process-note-out-of-place-basic";
-    const std::string description = "Basic note processing test with out-of-place audio.";
+    const std::string description =
+        "Sends audio and random note and MIDI events to the plugin with its default parameter "
+        "values and tests the output for consistency. Uses out-of-place audio processing.";
 
     try
     {
+        Prng prng = newPrng();
+
         auto host = std::make_shared<Host>();
         auto plugin = library.createPlugin(pluginId, host);
-
         if (!plugin->init())
         {
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        // Check if plugin supports note ports
-        const clap_plugin_note_ports_t *notePortsExt =
-            static_cast<const clap_plugin_note_ports_t *>(
-                plugin->getExtension(CLAP_EXT_NOTE_PORTS));
-
-        if (!notePortsExt)
+        // Note/MIDI-only plugins are fine, so missing audio ports is not an error here.
+        auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+        auto noteConfig = NotePortConfig::query(*plugin);
+        if (!noteConfig)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support note ports extension");
+                                       "The plugin does not implement the 'note-ports' extension.");
         }
-
-        uint32_t notePortCount = notePortsExt->count(plugin->clapPlugin(), true);
-        if (notePortCount == 0)
+        if (noteConfig->inputs.empty())
         {
-            return TestResult::skipped(testName, description, "Plugin has no input note ports");
+            return TestResult::skipped(
+                testName, description,
+                "The plugin implements 'note-ports' but has no input note ports.");
         }
+        host->handleCallbacksOnce();
 
-        const double sampleRate = 44100.0;
-        const uint32_t blockSize = BUFFER_SIZE;
+        NoteGenerator noteGen(*noteConfig);
+        AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+        ProcessingTest processingTest(*plugin, host, buffers);
+        processingTest.run(5, ProcessConfig{},
+                           [&](ProcessData &processData)
+                           {
+                               noteGen.fillEventQueue(prng, processData.inputEvents(), BUFFER_SIZE);
+                               buffers.randomize(prng);
+                           });
 
+        if (auto err = host->getCallbackError())
         {
-            AudioThreadGuard audioGuard(host);
-
-            if (!plugin->activate(sampleRate, blockSize, blockSize))
-            {
-                return TestResult::failed(testName, description, "Failed to activate plugin");
-            }
-
-            if (!plugin->startProcessing())
-            {
-                plugin->deactivate();
-                return TestResult::failed(testName, description, "Failed to start processing");
-            }
-
-            // Create buffers and process - simplified test
-            std::vector<float> inputBuffer(blockSize, 0.0f);
-            std::vector<float> outputBuffer(blockSize, 0.0f);
-            float *inputPtrs[1] = {inputBuffer.data()};
-            float *outputPtrs[1] = {outputBuffer.data()};
-
-            clap_audio_buffer_t inputAudioBuffer = {};
-            inputAudioBuffer.data32 = inputPtrs;
-            inputAudioBuffer.channel_count = 1;
-
-            clap_audio_buffer_t outputAudioBuffer = {};
-            outputAudioBuffer.data32 = outputPtrs;
-            outputAudioBuffer.channel_count = 1;
-
-            clap_input_events_t inEvents = {};
-            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
-            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
-            { return nullptr; };
-
-            clap_output_events_t outEvents = {};
-            outEvents.try_push =
-                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-            { return false; };
-
-            clap_process_t processData = {};
-            processData.frames_count = blockSize;
-            processData.audio_inputs = &inputAudioBuffer;
-            processData.audio_outputs = &outputAudioBuffer;
-            processData.audio_inputs_count = 1;
-            processData.audio_outputs_count = 1;
-            processData.in_events = &inEvents;
-            processData.out_events = &outEvents;
-
-            plugin->process(&processData);
-            plugin->stopProcessing();
-            plugin->deactivate();
+            return TestResult::failed(testName, description, *err);
         }
-
         return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
@@ -577,29 +513,51 @@ TestResult PluginTests::testProcessNoteInconsistent(PluginLibrary &library,
                                                     const std::string &pluginId)
 {
     const std::string testName = "process-note-inconsistent";
-    const std::string description = "Tests plugin handling of inconsistent note events.";
+    const std::string description =
+        "Sends intentionally inconsistent and mismatching note and MIDI events to the plugin with "
+        "its default parameter values and tests the output for consistency.";
 
     try
     {
+        Prng prng = newPrng();
+
         auto host = std::make_shared<Host>();
         auto plugin = library.createPlugin(pluginId, host);
-
         if (!plugin->init())
         {
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        const clap_plugin_note_ports_t *notePortsExt =
-            static_cast<const clap_plugin_note_ports_t *>(
-                plugin->getExtension(CLAP_EXT_NOTE_PORTS));
-
-        if (!notePortsExt)
+        auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+        auto noteConfig = NotePortConfig::query(*plugin);
+        if (!noteConfig)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support note ports extension");
+                                       "The plugin does not implement the 'note-ports' extension.");
         }
+        if (noteConfig->inputs.empty())
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin implements 'note-ports' but has no input note ports.");
+        }
+        host->handleCallbacksOnce();
 
-        // Basic test - just verify plugin doesn't crash with note ports
+        NoteGenerator noteGen(*noteConfig);
+        noteGen.withInconsistentEvents();
+        AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+        ProcessingTest processingTest(*plugin, host, buffers);
+        processingTest.run(5, ProcessConfig{},
+                           [&](ProcessData &processData)
+                           {
+                               noteGen.fillEventQueue(prng, processData.inputEvents(), BUFFER_SIZE);
+                               buffers.randomize(prng);
+                           });
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
         return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
@@ -685,9 +643,8 @@ TestResult PluginTests::testParamFuzzBasic(PluginLibrary &library, const std::st
             { return nullptr; };
 
             clap_output_events_t outEvents = {};
-            outEvents.try_push =
-                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-            { return false; };
+            outEvents.try_push = [](const clap_output_events_t *,
+                                    const clap_event_header_t *) -> bool { return false; };
 
             clap_process_t processData = {};
             processData.frames_count = blockSize;
@@ -888,9 +845,8 @@ TestResult PluginTests::testParamSetWrongNamespace(PluginLibrary &library,
             };
 
             clap_output_events_t outEvents = {};
-            outEvents.try_push =
-                [](const clap_output_events_t *, const clap_event_header_t *) -> bool
-            { return true; };
+            outEvents.try_push = [](const clap_output_events_t *,
+                                    const clap_event_header_t *) -> bool { return true; };
 
             clap_process_t processData = {};
             processData.frames_count = blockSize;
@@ -993,8 +949,7 @@ TestResult PluginTests::testStateInvalid(PluginLibrary &library, const std::stri
                 "Plugin returned true when loading empty state (should return false)");
         }
 
-        return TestResult::success(testName, description,
-                                   "Plugin correctly rejected empty state");
+        return TestResult::success(testName, description, "Plugin correctly rejected empty state");
     }
     catch (const std::exception &e)
     {
@@ -1009,7 +964,7 @@ TestResult PluginTests::testStateReproducibilityBasic(PluginLibrary &library,
 }
 
 TestResult PluginTests::testStateReproducibilityNullCookies(PluginLibrary &library,
-                                                           const std::string &pluginId)
+                                                            const std::string &pluginId)
 {
     return testStateReproducibilityImpl(library, pluginId, true);
 }
@@ -1107,7 +1062,8 @@ TestResult PluginTests::testStateReproducibilityImpl(PluginLibrary &library,
 
         if (!stateExt->save(plugin2->clapPlugin(), &ostream2))
         {
-            return TestResult::failed(testName, description, "Failed to save state from second instance");
+            return TestResult::failed(testName, description,
+                                      "Failed to save state from second instance");
         }
 
         // Compare states
@@ -1130,7 +1086,8 @@ TestResult PluginTests::testStateReproducibilityFlush(PluginLibrary &library,
                                                       const std::string &pluginId)
 {
     const std::string testName = "state-reproducibility-flush";
-    const std::string description = "Tests state reproducibility using flush for parameter changes.";
+    const std::string description =
+        "Tests state reproducibility using flush for parameter changes.";
 
     try
     {
