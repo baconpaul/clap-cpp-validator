@@ -146,7 +146,28 @@ inconsistency.
 
 ## Preset discovery
 
-_To be written when the preset-discovery subsystem lands (Phase 4)._
+`plugin/preset_discovery.{h,cpp}` implements the host side of the CLAP preset-discovery factory
+(`clap.preset-discovery-factory/2`, with the `draft-2` compat id as a fallback):
+
+- **`PresetDiscoveryFactory`** wraps the factory: `metadata()` lists every provider (rejecting null
+  descriptors and duplicate ids) and `createProvider()` instantiates one after a CLAP-version check.
+- **`Indexer`** is the host callback object passed to `provider->init()`. The plugin declares its
+  file types and locations into it; the indexer validates them (file extensions can't start with a
+  `.`, `FILE` locations must be absolute paths, `PLUGIN` locations must have a null path) and records
+  the first error.
+- **`Provider`** creates + initializes the provider and reads back the declared data.
+  `crawlLocation()` walks a declared location — a single file is queried directly, a directory is
+  recursively walked and filtered by the declared extensions, and internal (`PLUGIN`) locations are
+  queried with a null path — calling `get_metadata()` for each candidate.
+- **`MetadataReceiver`** is the per-`get_metadata()` callback object. It runs the begin-preset state
+  machine (single vs. container files, load keys, mandatory names for container presets), collects
+  each preset's plugin ids, and records errors (including missing `begin_preset()` calls and
+  cross-thread callbacks).
+
+The checks: `preset-discovery-crawl` indexes every location of every provider; `-load` additionally
+loads each discovered preset (grouped by CLAP plugin id, via the `preset-load` extension) and
+processes a buffer after each; `-descriptor-consistency` compares each provider's own descriptor to
+the factory's.
 
 ## Execution model
 

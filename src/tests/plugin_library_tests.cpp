@@ -16,10 +16,14 @@
 #include "../plugin/library.h"
 #include "../plugin/host.h"
 #include "../plugin/instance.h"
+#include "../plugin/preset_discovery.h"
+#include "../plugin/process.h"
+#include "../plugin/ext.h"
+#include "processing_test.h"
 #include <chrono>
-#include <random>
+#include <map>
 
-#ifdef __unix__
+#if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
 #endif
 
@@ -196,7 +200,7 @@ TestResult PluginLibraryTests::testScanRtldNow(const std::filesystem::path &libr
     const std::string description =
         "Checks whether the plugin loads correctly using 'dlopen(..., RTLD_LOCAL | RTLD_NOW)'.";
 
-#ifdef __unix__
+#if defined(__unix__) || defined(__APPLE__)
     try
     {
         // Try to load the library with RTLD_NOW to catch any unresolved symbols
@@ -224,34 +228,130 @@ TestResult PluginLibraryTests::testScanRtldNow(const std::filesystem::path &libr
 #endif
 }
 
-TestResult PluginLibraryTests::testPresetDiscoveryCrawl(const std::filesystem::path &libraryPath)
+namespace
 {
-    const std::string testName = "preset-discovery-crawl";
-    const std::string description =
-        "Ensures that all of the plugin's declared preset locations can be indexed successfully.";
+constexpr uint32_t kPresetBufferSize = 512;
 
+// Shared implementation for preset-discovery-crawl and preset-discovery-load. Crawls every declared
+// location of every provider; when loadPresets is true, also loads each discovered preset (grouped
+// by CLAP plugin id) and processes a buffer afterwards.
+TestResult presetCrawlImpl(const std::filesystem::path &libraryPath, const std::string &testName,
+                           const std::string &description, bool loadPresets)
+{
     try
     {
         auto library = PluginLibrary::load(libraryPath);
-
-        // Check if the preset discovery factory exists
-        if (!library->factoryExists(CLAP_PRESET_DISCOVERY_FACTORY_ID))
+        auto factory = PresetDiscoveryFactory::fromLibrary(*library);
+        if (!factory)
         {
-            return TestResult::skipped(
-                testName, description,
-                "The plugin does not implement the '" +
-                    std::string(CLAP_PRESET_DISCOVERY_FACTORY_ID) + "' factory.");
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the '" +
+                                           std::string(CLAP_PRESET_DISCOVERY_FACTORY_ID) +
+                                           "' factory.");
         }
 
-        // TODO: Implement full preset discovery crawling
-        // For now, we just check if the factory exists
-        return TestResult::skipped(testName, description,
-                                   "Preset discovery crawling not yet fully implemented");
+        std::vector<DiscoveredPreset> found;
+        for (const auto &providerMeta : factory->metadata())
+        {
+            auto provider = factory->createProvider(providerMeta);
+            for (const auto &location : provider->locations())
+            {
+                provider->crawlLocation(location, found);
+            }
+        }
+
+        if (!loadPresets)
+        {
+            return TestResult::success(testName, description);
+        }
+
+        // Group the discovered presets by the CLAP plugin id they can be loaded into.
+        std::map<std::string, std::vector<DiscoveredPreset>> byPluginId;
+        for (const auto &preset : found)
+        {
+            for (const auto &pluginId : preset.pluginIds)
+            {
+                if (pluginId.abi == "clap")
+                {
+                    byPluginId[pluginId.id].push_back(preset);
+                }
+            }
+        }
+
+        for (const auto &[pluginId, presets] : byPluginId)
+        {
+            auto host = std::make_shared<Host>();
+            auto plugin = library->createPlugin(pluginId, host);
+            if (!plugin->init())
+            {
+                return TestResult::failed(testName, description,
+                                          "Could not initialize plugin '" + pluginId + "'.");
+            }
+
+            const auto *presetLoad = static_cast<const clap_plugin_preset_load_t *>(
+                plugin->getExtension(CLAP_EXT_PRESET_LOAD));
+            if (!presetLoad)
+            {
+                presetLoad = static_cast<const clap_plugin_preset_load_t *>(
+                    plugin->getExtension(CLAP_EXT_PRESET_LOAD_COMPAT));
+            }
+            if (!presetLoad || !presetLoad->from_location)
+            {
+                return TestResult::skipped(testName, description,
+                                           "'" + pluginId +
+                                               "' does not implement the 'preset-load' extension.");
+            }
+
+            auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+            host->handleCallbacksOnce();
+
+            AudioBuffers buffers(audioConfig, kPresetBufferSize);
+            ProcessingTest processingTest(*plugin, host, buffers);
+
+            for (const auto &preset : presets)
+            {
+                const char *loadKey = preset.loadKey ? preset.loadKey->c_str() : nullptr;
+                bool loaded =
+                    presetLoad->from_location(plugin->clapPlugin(), preset.location.rawKind(),
+                                              preset.location.rawLocation(), loadKey);
+                host->handleCallbacksOnce();
+                if (auto err = host->getCallbackError())
+                {
+                    return TestResult::failed(testName, description, *err);
+                }
+                if (!loaded)
+                {
+                    return TestResult::failed(testName, description,
+                                              "Could not load the preset '" + preset.name +
+                                                  "' for plugin '" + pluginId + "'.");
+                }
+
+                // Process a buffer of silence so the preset change can settle in.
+                processingTest.runOnce(ProcessConfig{}, [](ProcessData &) {});
+                host->handleCallbacksOnce();
+                if (auto err = host->getCallbackError())
+                {
+                    return TestResult::failed(testName, description, *err);
+                }
+            }
+        }
+
+        return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
     {
         return TestResult::failed(testName, description, e.what());
     }
+}
+} // namespace
+
+TestResult PluginLibraryTests::testPresetDiscoveryCrawl(const std::filesystem::path &libraryPath)
+{
+    return presetCrawlImpl(
+        libraryPath, "preset-discovery-crawl",
+        "If the plugin supports the preset discovery mechanism, then this test ensures that all of "
+        "the plugin's declared locations can be indexed successfully.",
+        false);
 }
 
 TestResult PluginLibraryTests::testPresetDiscoveryDescriptorConsistency(
@@ -259,25 +359,35 @@ TestResult PluginLibraryTests::testPresetDiscoveryDescriptorConsistency(
 {
     const std::string testName = "preset-discovery-descriptor-consistency";
     const std::string description =
-        "Ensures that preset provider descriptors from the factory match those in the providers.";
+        "Ensures that all preset provider descriptors from a preset discovery factory match those "
+        "stored in the providers created by the factory.";
 
     try
     {
         auto library = PluginLibrary::load(libraryPath);
-
-        // Check if the preset discovery factory exists
-        if (!library->factoryExists(CLAP_PRESET_DISCOVERY_FACTORY_ID))
+        auto factory = PresetDiscoveryFactory::fromLibrary(*library);
+        if (!factory)
         {
-            return TestResult::skipped(
-                testName, description,
-                "The plugin does not implement the '" +
-                    std::string(CLAP_PRESET_DISCOVERY_FACTORY_ID) + "' factory.");
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the '" +
+                                           std::string(CLAP_PRESET_DISCOVERY_FACTORY_ID) +
+                                           "' factory.");
         }
 
-        // TODO: Implement full preset discovery descriptor consistency check
-        return TestResult::skipped(
-            testName, description,
-            "Preset discovery descriptor consistency check not yet fully implemented");
+        for (const auto &factoryMeta : factory->metadata())
+        {
+            auto provider = factory->createProvider(factoryMeta);
+            ProviderMetadata providerMeta = provider->descriptor();
+            if (providerMeta != factoryMeta)
+            {
+                return TestResult::failed(
+                    testName, description,
+                    "The provider descriptor stored on the 'clap_preset_discovery_provider' for '" +
+                        factoryMeta.id + "' differs from the one returned by the factory.");
+            }
+        }
+
+        return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
     {
@@ -287,31 +397,11 @@ TestResult PluginLibraryTests::testPresetDiscoveryDescriptorConsistency(
 
 TestResult PluginLibraryTests::testPresetDiscoveryLoad(const std::filesystem::path &libraryPath)
 {
-    const std::string testName = "preset-discovery-load";
-    const std::string description =
-        "Crawls preset locations and tries to load all found presets.";
-
-    try
-    {
-        auto library = PluginLibrary::load(libraryPath);
-
-        // Check if the preset discovery factory exists
-        if (!library->factoryExists(CLAP_PRESET_DISCOVERY_FACTORY_ID))
-        {
-            return TestResult::skipped(
-                testName, description,
-                "The plugin does not implement the '" +
-                    std::string(CLAP_PRESET_DISCOVERY_FACTORY_ID) + "' factory.");
-        }
-
-        // TODO: Implement full preset discovery and loading
-        return TestResult::skipped(testName, description,
-                                   "Preset discovery loading not yet fully implemented");
-    }
-    catch (const std::exception &e)
-    {
-        return TestResult::failed(testName, description, e.what());
-    }
+    return presetCrawlImpl(libraryPath, "preset-discovery-load",
+                           "The same as 'preset-discovery-crawl', but also tries to load all found "
+                           "presets for plugins "
+                           "supported by the CLAP plugin library.",
+                           true);
 }
 
 } // namespace clap_validator

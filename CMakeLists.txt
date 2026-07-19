@@ -31,6 +31,8 @@ add_executable(clap-validator
     src/plugin/process.h
     src/plugin/ext.cpp
     src/plugin/ext.h
+    src/plugin/preset_discovery.cpp
+    src/plugin/preset_discovery.h
     src/tests/test_case.cpp
     src/tests/test_case.h
     src/tests/rng.cpp
