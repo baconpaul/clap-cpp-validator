@@ -109,19 +109,30 @@ std::map<clap_id, double> getAllParamValues(const ParamsExt &params, const Param
 // Set by PluginTests::setFullOutput; when true, detail lists are shown in full.
 bool g_fullOutput = false;
 
-// Build a human-readable list of the parameters whose values differ. To keep the output readable
-// when many parameters mismatch, only the first few are listed, followed by a count of the rest,
-// unless full output is requested. The result is a multi-line block (each entry on its own line)
-// meant to follow a trailing ':'.
+// Format a list of items as a multi-line block, one per line, truncated to the first few (unless
+// full output is requested) followed by a count of the rest. Meant to follow a trailing ':'.
+std::string formatTruncatedList(const std::vector<std::string> &items)
+{
+    const size_t kMaxShown = g_fullOutput ? items.size() : std::min<size_t>(items.size(), 7);
+    std::string result;
+    for (size_t i = 0; i < kMaxShown; ++i)
+    {
+        result += "\n  - " + items[i];
+    }
+    if (items.size() > kMaxShown)
+    {
+        result += "\n  ... and " + std::to_string(items.size() - kMaxShown) + " more";
+    }
+    return result;
+}
+
+// Build a human-readable, truncated list of the parameters whose values differ. The result is a
+// multi-line block (each entry on its own line) meant to follow a trailing ':'.
 std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
                                     const std::map<clap_id, double> &expected,
                                     const ParamInfoMap &infos)
 {
-    const size_t kMaxShown = g_fullOutput ? std::numeric_limits<size_t>::max() : 7;
-
-    std::string result;
-    size_t shown = 0;
-    size_t total = 0;
+    std::vector<std::string> items;
     for (const auto &[id, actualValue] : actual)
     {
         auto it = expected.find(id);
@@ -130,20 +141,11 @@ std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
         {
             continue;
         }
-        total++;
-        if (shown < kMaxShown)
-        {
-            shown++;
-            std::string name = infos.count(id) ? infos.at(id).name : std::string();
-            result += "\n  - parameter " + std::to_string(id) + " ('" + name + "'): expected " +
-                      std::to_string(expectedValue) + ", actual " + std::to_string(actualValue);
-        }
+        std::string name = infos.count(id) ? infos.at(id).name : std::string();
+        items.push_back("parameter " + std::to_string(id) + " ('" + name + "'): expected " +
+                        std::to_string(expectedValue) + ", actual " + std::to_string(actualValue));
     }
-    if (total > shown)
-    {
-        result += "\n  ... and " + std::to_string(total - shown) + " more";
-    }
-    return result;
+    return formatTruncatedList(items);
 }
 
 } // namespace
@@ -554,6 +556,8 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
         size_t expectedConversions = paramInfos.size() * kValuesPerParam;
         size_t numSupportedValueToText = 0;
         size_t numSupportedTextToValue = 0;
+        std::vector<std::string> failedValueToText;
+        std::vector<std::string> failedTextToValue;
 
         for (const auto &[paramId, info] : paramInfos)
         {
@@ -572,6 +576,8 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 if (!startingText)
                 {
                     // value_to_text unsupported for this parameter; skip the rest of it.
+                    failedValueToText.push_back("parameter '" + info.name + "' at value " +
+                                                std::to_string(startingValue));
                     break;
                 }
                 numSupportedValueToText++;
@@ -580,6 +586,9 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 if (!reconvertedValue)
                 {
                     // text_to_value unsupported; keep testing value_to_text on the next value.
+                    failedTextToValue.push_back("parameter '" + info.name + "': text_to_value('" +
+                                                *startingText + "') unsupported (value " +
+                                                std::to_string(startingValue) + ")");
                     continue;
                 }
                 numSupportedTextToValue++;
@@ -623,7 +632,9 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 "'clap_plugin_params::value_to_text()' succeeded for " +
                 std::to_string(numSupportedValueToText) + " out of " +
                 std::to_string(expectedConversions) +
-                " calls; it should be supported for either all parameters or none.");
+                " calls; it should be supported for either all parameters or none. The conversions "
+                "that were not supported:" +
+                formatTruncatedList(failedValueToText));
         }
         if (numSupportedTextToValue != 0 && numSupportedTextToValue != expectedConversions)
         {
@@ -631,7 +642,9 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 "'clap_plugin_params::text_to_value()' succeeded for " +
                 std::to_string(numSupportedTextToValue) + " out of " +
                 std::to_string(expectedConversions) +
-                " calls; it should be supported for either all parameters or none.");
+                " calls; it should be supported for either all parameters or none. The conversions "
+                "that were not supported:" +
+                formatTruncatedList(failedTextToValue));
         }
 
         if (auto err = host->getCallbackError())
