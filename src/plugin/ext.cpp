@@ -199,22 +199,11 @@ ParamInfoMap ParamsExt::info() const
         }
 
         std::string name = fixedToString(info.name, CLAP_NAME_SIZE);
-        std::string module = fixedToString(info.module, CLAP_PATH_SIZE);
-        if (!module.empty())
-        {
-            if (module.front() == '/')
-            {
-                fail("The module of parameter '" + name + "' starts with a leading slash.");
-            }
-            if (module.back() == '/')
-            {
-                fail("The module of parameter '" + name + "' ends with a trailing slash.");
-            }
-            if (module.find("//") != std::string::npos)
-            {
-                fail("The module of parameter '" + name + "' contains subsequent slashes.");
-            }
-        }
+        // NOTE: the Rust validator intended to validate the parameter's module string for stray
+        // slashes, but a copy-paste bug made it read the *name* field instead, so in practice it
+        // validated nothing here. We omit the check rather than introduce a stricter one, since a
+        // leading slash in a module path is used by real, working plugins (e.g. Surge XT) and
+        // enforcing it would diverge from the reference validator's behavior.
 
         if (info.min_value > info.max_value)
         {

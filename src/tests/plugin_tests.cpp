@@ -402,49 +402,131 @@ TestResult PluginTests::testProcessAudioOutOfPlaceBasic(PluginLibrary &library,
 TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::string &pluginId)
 {
     const std::string testName = "param-conversions";
-    const std::string description = "Parameter value/string conversion test.";
+    const std::string description =
+        "Asserts that value to string and string to value conversions are supported for either all "
+        "or none of the plugin's parameters, and that conversions between values and strings "
+        "roundtrip consistently.";
 
     try
     {
+        Prng prng = newPrng();
+
         auto host = std::make_shared<Host>();
         auto plugin = library.createPlugin(pluginId, host);
-
         if (!plugin->init())
         {
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        // Get the params extension
-        const clap_plugin_params_t *paramsExt =
-            static_cast<const clap_plugin_params_t *>(plugin->getExtension(CLAP_EXT_PARAMS));
-
-        if (!paramsExt)
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support params extension");
+                                       "The plugin does not implement the 'params' extension.");
         }
+        host->handleCallbacksOnce();
 
-        uint32_t paramCount = paramsExt->count(plugin->clapPlugin());
-        if (paramCount == 0)
-        {
-            return TestResult::skipped(testName, description, "Plugin has no parameters");
-        }
+        ParamInfoMap paramInfos = params->info();
 
-        // Test that all parameters can be queried
-        for (uint32_t i = 0; i < paramCount; ++i)
+        // A plugin should support each conversion for either all of its parameters or for none of
+        // them. We test six values per parameter: the minimum and maximum (which may have special
+        // meaning) plus four random values in range.
+        constexpr int kValuesPerParam = 6;
+        size_t expectedConversions = paramInfos.size() * kValuesPerParam;
+        size_t numSupportedValueToText = 0;
+        size_t numSupportedTextToValue = 0;
+
+        for (const auto &[paramId, info] : paramInfos)
         {
-            clap_param_info_t info = {};
-            if (!paramsExt->get_info(plugin->clapPlugin(), i, &info))
+            double values[kValuesPerParam] = {info.minValue,
+                                              info.maxValue,
+                                              prng.nextDouble(info.minValue, info.maxValue),
+                                              prng.nextDouble(info.minValue, info.maxValue),
+                                              prng.nextDouble(info.minValue, info.maxValue),
+                                              prng.nextDouble(info.minValue, info.maxValue)};
+
+            for (double startingValue : values)
             {
-                return TestResult::failed(testName, description,
-                                          "Failed to get info for parameter index " +
-                                              std::to_string(i));
+                // If the plugin rounds string representations then a raw value may not roundtrip,
+                // so we start from the plugin's own string representation.
+                auto startingText = params->valueToText(paramId, startingValue);
+                if (!startingText)
+                {
+                    // value_to_text unsupported for this parameter; skip the rest of it.
+                    break;
+                }
+                numSupportedValueToText++;
+
+                auto reconvertedValue = params->textToValue(paramId, *startingText);
+                if (!reconvertedValue)
+                {
+                    // text_to_value unsupported; keep testing value_to_text on the next value.
+                    continue;
+                }
+                numSupportedTextToValue++;
+
+                auto reconvertedText = params->valueToText(paramId, *reconvertedValue);
+                if (!reconvertedText)
+                {
+                    throw std::runtime_error("Repeated value-to-text conversion failed for "
+                                             "parameter '" +
+                                             info.name + "'.");
+                }
+                // Both strings come from the plugin, so they should be identical.
+                if (*startingText != *reconvertedText)
+                {
+                    throw std::runtime_error(
+                        "Converting a value to a string, back to a value, and back to a string for "
+                        "parameter '" +
+                        info.name + "' produced '" + *startingText + "' -> '" + *reconvertedText +
+                        "', which is not consistent.");
+                }
+
+                auto finalValue = params->textToValue(paramId, *reconvertedText);
+                if (!finalValue)
+                {
+                    throw std::runtime_error("Repeated text-to-value conversion failed for "
+                                             "parameter '" +
+                                             info.name + "'.");
+                }
+                if (*finalValue != *reconvertedValue)
+                {
+                    throw std::runtime_error(
+                        "Repeatedly converting parameter '" + info.name +
+                        "' between values and strings does not roundtrip consistently.");
+                }
             }
         }
 
-        return TestResult::success(testName, description,
-                                   "Successfully queried " + std::to_string(paramCount) +
-                                       " parameters");
+        if (numSupportedValueToText != 0 && numSupportedValueToText != expectedConversions)
+        {
+            throw std::runtime_error(
+                "'clap_plugin_params::value_to_text()' succeeded for " +
+                std::to_string(numSupportedValueToText) + " out of " +
+                std::to_string(expectedConversions) +
+                " calls; it should be supported for either all parameters or none.");
+        }
+        if (numSupportedTextToValue != 0 && numSupportedTextToValue != expectedConversions)
+        {
+            throw std::runtime_error(
+                "'clap_plugin_params::text_to_value()' succeeded for " +
+                std::to_string(numSupportedTextToValue) + " out of " +
+                std::to_string(expectedConversions) +
+                " calls; it should be supported for either all parameters or none.");
+        }
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+
+        if (numSupportedValueToText == 0 || numSupportedTextToValue == 0)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin's parameters need to support both value-to-text "
+                                       "and text-to-value conversions for this test.");
+        }
+        return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
     {
@@ -569,133 +651,91 @@ TestResult PluginTests::testProcessNoteInconsistent(PluginLibrary &library,
 TestResult PluginTests::testParamFuzzBasic(PluginLibrary &library, const std::string &pluginId)
 {
     const std::string testName = "param-fuzz-basic";
-    const std::string description = "Fuzzes plugin parameters with random values.";
+    const std::string description =
+        "Generates random parameter values, sets those on the plugin, and has the plugin process "
+        "buffers of random audio and note events. The plugin passes the test if it doesn't produce "
+        "any infinite or NaN values, and doesn't crash.";
 
     try
     {
+        Prng prng = newPrng();
+
         auto host = std::make_shared<Host>();
         auto plugin = library.createPlugin(pluginId, host);
-
         if (!plugin->init())
         {
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        const clap_plugin_params_t *paramsExt =
-            static_cast<const clap_plugin_params_t *>(plugin->getExtension(CLAP_EXT_PARAMS));
-
-        if (!paramsExt)
+        // Audio and note ports are both optional; only the params extension is required.
+        auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+        auto noteConfig = NotePortConfig::query(*plugin);
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support params extension");
+                                       "The plugin does not implement the 'params' extension.");
         }
+        host->handleCallbacksOnce();
 
-        uint32_t paramCount = paramsExt->count(plugin->clapPlugin());
-        if (paramCount == 0)
+        ParamInfoMap paramInfos = params->info();
+        ParamFuzzer paramFuzzer(paramInfos);
+
+        // Only generate notes if the plugin actually has input note ports (JUCE exposes the
+        // extension with no ports).
+        std::optional<NoteGenerator> noteGen;
+        if (noteConfig && !noteConfig->inputs.empty())
         {
-            return TestResult::skipped(testName, description, "Plugin has no parameters");
+            noteGen.emplace(*noteConfig);
         }
 
-        const double sampleRate = 44100.0;
-        const uint32_t blockSize = BUFFER_SIZE;
+        AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+        ProcessingTest processingTest(*plugin, host, buffers);
 
+        for (size_t permutation = 1; permutation <= FUZZ_NUM_PERMUTATIONS; ++permutation)
         {
-            AudioThreadGuard audioGuard(host);
+            // The parameter values for this permutation are injected once at the start; the plugin
+            // then processes several buffers so its state can settle before the next permutation.
+            EventList paramEventQueue;
+            paramFuzzer.randomizeParamsAt(prng, 0, paramEventQueue);
+            std::vector<Event> paramEvents = paramEventQueue.events();
 
-            if (!plugin->activate(sampleRate, blockSize, blockSize))
+            bool haveSetParameters = false;
+            try
             {
-                return TestResult::failed(testName, description, "Failed to activate plugin");
+                processingTest.run(static_cast<int>(FUZZ_RUNS_PER_PERMUTATION), ProcessConfig{},
+                                   [&](ProcessData &processData)
+                                   {
+                                       if (!haveSetParameters)
+                                       {
+                                           for (const auto &event : paramEvents)
+                                           {
+                                               processData.inputEvents().push(event);
+                                           }
+                                           haveSetParameters = true;
+                                       }
+                                       if (noteGen)
+                                       {
+                                           noteGen->fillEventQueue(prng, processData.inputEvents(),
+                                                                   BUFFER_SIZE);
+                                       }
+                                       buffers.randomize(prng);
+                                   });
             }
-
-            if (!plugin->startProcessing())
+            catch (const std::exception &e)
             {
-                plugin->deactivate();
-                return TestResult::failed(testName, description, "Failed to start processing");
+                return TestResult::failed(
+                    testName, description,
+                    "Invalid output detected in parameter value permutation " +
+                        std::to_string(permutation) + " of " +
+                        std::to_string(FUZZ_NUM_PERMUTATIONS) + ": " + e.what());
             }
-
-            std::random_device rd;
-            std::mt19937 gen(rd());
-
-            // Collect parameter info
-            std::vector<clap_param_info_t> paramInfos(paramCount);
-            for (uint32_t i = 0; i < paramCount; ++i)
-            {
-                paramsExt->get_info(plugin->clapPlugin(), i, &paramInfos[i]);
-            }
-
-            // Create buffers
-            std::vector<float> inputBuffer(blockSize, 0.0f);
-            std::vector<float> outputBuffer(blockSize, 0.0f);
-            float *inputPtrs[1] = {inputBuffer.data()};
-            float *outputPtrs[1] = {outputBuffer.data()};
-
-            clap_audio_buffer_t inputAudioBuffer = {};
-            inputAudioBuffer.data32 = inputPtrs;
-            inputAudioBuffer.channel_count = 1;
-
-            clap_audio_buffer_t outputAudioBuffer = {};
-            outputAudioBuffer.data32 = outputPtrs;
-            outputAudioBuffer.channel_count = 1;
-
-            clap_input_events_t inEvents = {};
-            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
-            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
-            { return nullptr; };
-
-            clap_output_events_t outEvents = {};
-            outEvents.try_push = [](const clap_output_events_t *,
-                                    const clap_event_header_t *) -> bool { return false; };
-
-            clap_process_t processData = {};
-            processData.frames_count = blockSize;
-            processData.audio_inputs = &inputAudioBuffer;
-            processData.audio_outputs = &outputAudioBuffer;
-            processData.audio_inputs_count = 1;
-            processData.audio_outputs_count = 1;
-            processData.in_events = &inEvents;
-            processData.out_events = &outEvents;
-
-            // Run multiple permutations
-            for (size_t perm = 0; perm < FUZZ_NUM_PERMUTATIONS; ++perm)
-            {
-                // Randomize input
-                std::uniform_real_distribution<float> audioDist(-1.0f, 1.0f);
-                for (uint32_t i = 0; i < blockSize; ++i)
-                {
-                    inputBuffer[i] = audioDist(gen);
-                }
-
-                // Process
-                for (size_t run = 0; run < FUZZ_RUNS_PER_PERMUTATION; ++run)
-                {
-                    clap_process_status status = plugin->process(&processData);
-                    if (status == CLAP_PROCESS_ERROR)
-                    {
-                        plugin->stopProcessing();
-                        plugin->deactivate();
-                        return TestResult::failed(testName, description,
-                                                  "Process returned error during fuzz test");
-                    }
-
-                    // Check for non-finite values
-                    for (uint32_t i = 0; i < blockSize; ++i)
-                    {
-                        if (!std::isfinite(outputBuffer[i]))
-                        {
-                            plugin->stopProcessing();
-                            plugin->deactivate();
-                            return TestResult::failed(
-                                testName, description,
-                                "Output contains non-finite value during fuzz test");
-                        }
-                    }
-                }
-            }
-
-            plugin->stopProcessing();
-            plugin->deactivate();
         }
 
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
         return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
@@ -708,196 +748,80 @@ TestResult PluginTests::testParamSetWrongNamespace(PluginLibrary &library,
                                                    const std::string &pluginId)
 {
     const std::string testName = "param-set-wrong-namespace";
-    const std::string description = "Tests that plugin ignores param events with wrong namespace.";
+    const std::string description =
+        "Sends events to the plugin with the 'CLAP_EVENT_PARAM_VALUE' event type but with a "
+        "mismatching namespace ID. Asserts that the plugin's parameter values don't change.";
 
     try
     {
+        Prng prng = newPrng();
+
         auto host = std::make_shared<Host>();
         auto plugin = library.createPlugin(pluginId, host);
-
         if (!plugin->init())
         {
             return TestResult::failed(testName, description, "Failed to initialize plugin");
         }
 
-        const clap_plugin_params_t *paramsExt =
-            static_cast<const clap_plugin_params_t *>(plugin->getExtension(CLAP_EXT_PARAMS));
-
-        if (!paramsExt)
+        auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support params extension");
+                                       "The plugin does not implement the 'params' extension.");
         }
+        host->handleCallbacksOnce();
 
-        uint32_t paramCount = paramsExt->count(plugin->clapPlugin());
-        if (paramCount == 0)
+        ParamInfoMap paramInfos = params->info();
+        std::map<clap_id, double> initialValues;
+        for (const auto &entry : paramInfos)
         {
-            return TestResult::skipped(testName, description, "Plugin has no parameters");
+            initialValues[entry.first] = params->getValue(entry.first);
         }
 
-        // Collect all parameter info and initial values
-        std::vector<clap_param_info_t> paramInfos(paramCount);
-        std::map<clap_id, double> initialParamValues;
-
-        for (uint32_t i = 0; i < paramCount; ++i)
+        // Build random parameter events but with the wrong namespace id. The plugin should ignore
+        // them, so its parameter values should stay unchanged.
+        constexpr uint16_t kIncorrectNamespaceId = 0xb33f;
+        EventList paramEventQueue;
+        ParamFuzzer(paramInfos).randomizeParamsAt(prng, 0, paramEventQueue);
+        std::vector<Event> paramEvents = paramEventQueue.events();
+        for (auto &event : paramEvents)
         {
-            if (!paramsExt->get_info(plugin->clapPlugin(), i, &paramInfos[i]))
-            {
-                return TestResult::failed(testName, description, "Failed to get parameter info");
-            }
-
-            double value = 0.0;
-            if (!paramsExt->get_value(plugin->clapPlugin(), paramInfos[i].id, &value))
-            {
-                return TestResult::failed(testName, description, "Failed to get parameter value");
-            }
-            initialParamValues[paramInfos[i].id] = value;
+            event.header()->space_id = kIncorrectNamespaceId;
         }
 
-        // Generate random parameter set events with WRONG namespace ID
-        constexpr uint16_t INCORRECT_NAMESPACE_ID = 0xb33f;
+        AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+        ProcessingTest processingTest(*plugin, host, buffers);
+        processingTest.runOnce(ProcessConfig{},
+                               [&](ProcessData &processData)
+                               {
+                                   for (const auto &event : paramEvents)
+                                   {
+                                       processData.inputEvents().push(event);
+                                   }
+                               });
 
-        std::random_device rd;
-        std::mt19937 gen(rd());
-
-        std::vector<clap_event_param_value_t> paramEvents;
-        paramEvents.reserve(paramCount);
-
-        for (uint32_t i = 0; i < paramCount; ++i)
+        std::map<clap_id, double> actualValues;
+        for (const auto &entry : paramInfos)
         {
-            const auto &info = paramInfos[i];
-
-            // Generate a random value within the parameter's range
-            std::uniform_real_distribution<double> dist(info.min_value, info.max_value);
-            double randomValue = dist(gen);
-
-            clap_event_param_value_t event = {};
-            event.header.size = sizeof(clap_event_param_value_t);
-            event.header.time = 0;
-            event.header.space_id = INCORRECT_NAMESPACE_ID; // Wrong namespace!
-            event.header.type = CLAP_EVENT_PARAM_VALUE;
-            event.header.flags = 0;
-            event.param_id = info.id;
-            event.cookie = info.cookie;
-            event.note_id = -1;
-            event.port_index = -1;
-            event.channel = -1;
-            event.key = -1;
-            event.value = randomValue;
-
-            paramEvents.push_back(event);
+            actualValues[entry.first] = params->getValue(entry.first);
         }
 
-        const double sampleRate = 44100.0;
-        const uint32_t blockSize = BUFFER_SIZE;
-
+        if (auto err = host->getCallbackError())
         {
-            AudioThreadGuard audioGuard(host);
-
-            if (!plugin->activate(sampleRate, blockSize, blockSize))
-            {
-                return TestResult::failed(testName, description, "Failed to activate plugin");
-            }
-
-            if (!plugin->startProcessing())
-            {
-                plugin->deactivate();
-                return TestResult::failed(testName, description, "Failed to start processing");
-            }
-
-            // Create buffers
-            std::vector<float> inputBuffer(blockSize, 0.0f);
-            std::vector<float> outputBuffer(blockSize, 0.0f);
-            float *inputPtrs[1] = {inputBuffer.data()};
-            float *outputPtrs[1] = {outputBuffer.data()};
-
-            clap_audio_buffer_t inputAudioBuffer = {};
-            inputAudioBuffer.data32 = inputPtrs;
-            inputAudioBuffer.channel_count = 1;
-
-            clap_audio_buffer_t outputAudioBuffer = {};
-            outputAudioBuffer.data32 = outputPtrs;
-            outputAudioBuffer.channel_count = 1;
-
-            // Set up input events with our wrong-namespace param events
-            struct EventContext
-            {
-                std::vector<clap_event_param_value_t> *events;
-            };
-            EventContext ctx{&paramEvents};
-
-            clap_input_events_t inEvents = {};
-            inEvents.ctx = &ctx;
-            inEvents.size = [](const clap_input_events_t *list) -> uint32_t
-            {
-                auto *context = static_cast<EventContext *>(list->ctx);
-                return static_cast<uint32_t>(context->events->size());
-            };
-            inEvents.get = [](const clap_input_events_t *list,
-                              uint32_t index) -> const clap_event_header_t *
-            {
-                auto *context = static_cast<EventContext *>(list->ctx);
-                if (index < context->events->size())
-                {
-                    return &(*context->events)[index].header;
-                }
-                return nullptr;
-            };
-
-            clap_output_events_t outEvents = {};
-            outEvents.try_push = [](const clap_output_events_t *,
-                                    const clap_event_header_t *) -> bool { return true; };
-
-            clap_process_t processData = {};
-            processData.frames_count = blockSize;
-            processData.audio_inputs = &inputAudioBuffer;
-            processData.audio_outputs = &outputAudioBuffer;
-            processData.audio_inputs_count = 1;
-            processData.audio_outputs_count = 1;
-            processData.in_events = &inEvents;
-            processData.out_events = &outEvents;
-
-            // Process once with the wrong-namespace events
-            clap_process_status status = plugin->process(&processData);
-            if (status == CLAP_PROCESS_ERROR)
-            {
-                plugin->stopProcessing();
-                plugin->deactivate();
-                return TestResult::failed(testName, description, "Process returned error");
-            }
-
-            plugin->stopProcessing();
-            plugin->deactivate();
+            return TestResult::failed(testName, description, *err);
         }
 
-        // Check that parameter values have NOT changed
-        std::map<clap_id, double> actualParamValues;
-        for (uint32_t i = 0; i < paramCount; ++i)
-        {
-            double value = 0.0;
-            if (!paramsExt->get_value(plugin->clapPlugin(), paramInfos[i].id, &value))
-            {
-                return TestResult::failed(testName, description,
-                                          "Failed to get parameter value after processing");
-            }
-            actualParamValues[paramInfos[i].id] = value;
-        }
-
-        if (actualParamValues == initialParamValues)
+        if (actualValues == initialValues)
         {
             return TestResult::success(testName, description);
         }
-        else
-        {
-            return TestResult::failed(
-                testName, description,
-                "Sending events with type ID " + std::to_string(CLAP_EVENT_PARAM_VALUE) +
-                    " (CLAP_EVENT_PARAM_VALUE) and namespace ID 0x" +
-                    std::to_string(INCORRECT_NAMESPACE_ID) +
-                    " to the plugin caused its parameter values to change. "
-                    "This should not happen. The plugin may not be checking the event's "
-                    "namespace ID.");
-        }
+        return TestResult::failed(
+            testName, description,
+            "Sending CLAP_EVENT_PARAM_VALUE events with namespace ID 0xb33f to the plugin caused "
+            "its parameter values to change. This should not happen; the plugin may not be "
+            "checking "
+            "the event's namespace ID.");
     }
     catch (const std::exception &e)
     {
