@@ -121,7 +121,8 @@ std::string formatTruncatedList(const std::vector<std::string> &items)
     }
     if (items.size() > kMaxShown)
     {
-        result += "\n  ... and " + std::to_string(items.size() - kMaxShown) + " more";
+        result += "\n  ... and " + std::to_string(items.size() - kMaxShown) +
+                  " more. Run with --full-output to see all";
     }
     return result;
 }
