@@ -551,7 +551,9 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
 
         // A plugin should support each conversion for either all of its parameters or for none of
         // them. We test six values per parameter: the minimum and maximum (which may have special
-        // meaning) plus four random values in range.
+        // meaning) plus four random values in range. Stepped parameters only accept integer values,
+        // so their random values are rounded to a valid step - feeding a stepped parameter a
+        // fractional value is not a meaningful test.
         constexpr int kValuesPerParam = 6;
         size_t expectedConversions = paramInfos.size() * kValuesPerParam;
         size_t numSupportedValueToText = 0;
@@ -561,12 +563,13 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
 
         for (const auto &[paramId, info] : paramInfos)
         {
-            double values[kValuesPerParam] = {info.minValue,
-                                              info.maxValue,
-                                              prng.nextDouble(info.minValue, info.maxValue),
-                                              prng.nextDouble(info.minValue, info.maxValue),
-                                              prng.nextDouble(info.minValue, info.maxValue),
-                                              prng.nextDouble(info.minValue, info.maxValue)};
+            auto pick = [&]()
+            {
+                double value = prng.nextDouble(info.minValue, info.maxValue);
+                return info.stepped() ? std::round(value) : value;
+            };
+            double values[kValuesPerParam] = {info.minValue, info.maxValue, pick(),
+                                              pick(),        pick(),        pick()};
 
             for (double startingValue : values)
             {
@@ -625,6 +628,24 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 }
             }
         }
+
+        // A stepped parameter's rounded values often collapse to the same step, so drop duplicate
+        // entries to keep the reported list concise.
+        auto dedupe = [](std::vector<std::string> &items)
+        {
+            std::set<std::string> seen;
+            std::vector<std::string> unique;
+            for (auto &item : items)
+            {
+                if (seen.insert(item).second)
+                {
+                    unique.push_back(item);
+                }
+            }
+            items = std::move(unique);
+        };
+        dedupe(failedValueToText);
+        dedupe(failedTextToValue);
 
         if (numSupportedValueToText != 0 && numSupportedValueToText != expectedConversions)
         {
