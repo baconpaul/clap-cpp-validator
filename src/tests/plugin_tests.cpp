@@ -24,12 +24,113 @@
 #include <set>
 #include <cmath>
 #include <cstring>
-#include <random>
 #include <map>
-#include <cmath>
+#include <algorithm>
+#include <limits>
 
 namespace clap_validator
 {
+
+namespace
+{
+
+// Save the plugin's state into a byte vector. maxBytesPerWrite caps how many bytes each write()
+// call accepts, used to exercise buffered writes. Throws if the plugin fails to save.
+std::vector<uint8_t> saveState(const clap_plugin_state_t *state, const clap_plugin_t *plugin,
+                               size_t maxBytesPerWrite = std::numeric_limits<size_t>::max())
+{
+    struct Writer
+    {
+        std::vector<uint8_t> data;
+        size_t maxBytesPerWrite;
+    } writer{{}, maxBytesPerWrite};
+
+    clap_ostream_t stream = {};
+    stream.ctx = &writer;
+    stream.write = [](const clap_ostream_t *s, const void *buffer, uint64_t size) -> int64_t
+    {
+        auto *self = static_cast<Writer *>(s->ctx);
+        uint64_t n = std::min<uint64_t>(size, self->maxBytesPerWrite);
+        const uint8_t *bytes = static_cast<const uint8_t *>(buffer);
+        self->data.insert(self->data.end(), bytes, bytes + n);
+        return static_cast<int64_t>(n);
+    };
+
+    if (!state->save(plugin, &stream))
+    {
+        throw std::runtime_error("The plugin failed to save its state.");
+    }
+    return writer.data;
+}
+
+// Load state from a byte vector. maxBytesPerRead caps how many bytes each read() call returns,
+// used to exercise buffered reads. Returns the plugin's load() result.
+bool loadState(const clap_plugin_state_t *state, const clap_plugin_t *plugin,
+               const std::vector<uint8_t> &data,
+               size_t maxBytesPerRead = std::numeric_limits<size_t>::max())
+{
+    struct Reader
+    {
+        const std::vector<uint8_t> *data;
+        size_t pos;
+        size_t maxBytesPerRead;
+    } reader{&data, 0, maxBytesPerRead};
+
+    clap_istream_t stream = {};
+    stream.ctx = &reader;
+    stream.read = [](const clap_istream_t *s, void *buffer, uint64_t size) -> int64_t
+    {
+        auto *self = static_cast<Reader *>(s->ctx);
+        size_t available = self->data->size() - self->pos;
+        uint64_t n = std::min<uint64_t>(
+            {size, static_cast<uint64_t>(available), static_cast<uint64_t>(self->maxBytesPerRead)});
+        if (n > 0)
+        {
+            std::memcpy(buffer, self->data->data() + self->pos, n);
+            self->pos += n;
+        }
+        return static_cast<int64_t>(n);
+    };
+
+    return state->load(plugin, &stream);
+}
+
+// Query every parameter's current value.
+std::map<clap_id, double> getAllParamValues(const ParamsExt &params, const ParamInfoMap &infos)
+{
+    std::map<clap_id, double> values;
+    for (const auto &entry : infos)
+    {
+        values[entry.first] = params.getValue(entry.first);
+    }
+    return values;
+}
+
+// Build a human-readable list of the parameters whose values differ.
+std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
+                                    const std::map<clap_id, double> &expected,
+                                    const ParamInfoMap &infos)
+{
+    std::string result;
+    for (const auto &[id, actualValue] : actual)
+    {
+        auto it = expected.find(id);
+        double expectedValue = it != expected.end() ? it->second : 0.0;
+        if (actualValue != expectedValue)
+        {
+            if (!result.empty())
+            {
+                result += ", ";
+            }
+            std::string name = infos.count(id) ? infos.at(id).name : std::string();
+            result += "parameter " + std::to_string(id) + " ('" + name + "'), expected " +
+                      std::to_string(expectedValue) + ", actual " + std::to_string(actualValue);
+        }
+    }
+    return result;
+}
+
+} // namespace
 
 std::vector<TestCaseInfo> PluginTests::getAllTests()
 {
@@ -899,106 +1000,121 @@ TestResult PluginTests::testStateReproducibilityImpl(PluginLibrary &library,
 {
     const std::string testName =
         zeroOutCookies ? "state-reproducibility-null-cookies" : "state-reproducibility-basic";
-    const std::string description = "Tests state save/load reproducibility.";
+    const std::string description =
+        zeroOutCookies
+            ? "The exact same test as state-reproducibility-basic, but with all cookies in the "
+              "parameter events set to null pointers."
+            : "Randomizes a plugin's parameters, saves its state, recreates the plugin instance, "
+              "reloads the state, and then checks whether the parameter values are the same and "
+              "whether saving the state once more results in the same state file as before.";
 
     try
     {
+        Prng prng = newPrng();
         auto host = std::make_shared<Host>();
-        auto plugin = library.createPlugin(pluginId, host);
 
-        if (!plugin->init())
+        std::vector<uint8_t> expectedState;
+        std::map<clap_id, double> expectedValues;
+        ParamInfoMap paramInfos;
+
+        // First instance: randomize the parameters through processing, then capture the state.
         {
-            return TestResult::failed(testName, description, "Failed to initialize plugin");
-        }
-
-        const clap_plugin_state_t *stateExt =
-            static_cast<const clap_plugin_state_t *>(plugin->getExtension(CLAP_EXT_STATE));
-
-        if (!stateExt)
-        {
-            return TestResult::skipped(testName, description,
-                                       "Plugin does not support state extension");
-        }
-
-        const clap_plugin_params_t *paramsExt =
-            static_cast<const clap_plugin_params_t *>(plugin->getExtension(CLAP_EXT_PARAMS));
-
-        // Save initial state
-        struct StateBuffer
-        {
-            std::vector<uint8_t> data;
-
-            static int64_t write(const clap_ostream_t *stream, const void *buffer, uint64_t size)
+            auto plugin = library.createPlugin(pluginId, host);
+            if (!plugin->init())
             {
-                auto *self = static_cast<StateBuffer *>(stream->ctx);
-                const uint8_t *bytes = static_cast<const uint8_t *>(buffer);
-                self->data.insert(self->data.end(), bytes, bytes + size);
-                return static_cast<int64_t>(size);
+                return TestResult::failed(testName, description, "Failed to initialize plugin");
             }
 
-            static int64_t read(const clap_istream_t *stream, void *buffer, uint64_t size)
+            auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+            auto params = ParamsExt::create(*plugin);
+            if (!params)
             {
-                auto *self = static_cast<StateBuffer *>(stream->ctx);
-                size_t toRead = std::min(static_cast<size_t>(size), self->data.size());
-                if (toRead > 0)
-                {
-                    std::memcpy(buffer, self->data.data(), toRead);
-                    self->data.erase(self->data.begin(), self->data.begin() + toRead);
-                }
-                return static_cast<int64_t>(toRead);
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'params' extension.");
             }
-        };
+            const clap_plugin_state_t *stateExt =
+                static_cast<const clap_plugin_state_t *>(plugin->getExtension(CLAP_EXT_STATE));
+            if (!stateExt)
+            {
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'state' extension.");
+            }
+            host->handleCallbacksOnce();
 
-        StateBuffer stateBuffer1;
-        clap_ostream_t ostream1 = {};
-        ostream1.ctx = &stateBuffer1;
-        ostream1.write = StateBuffer::write;
+            paramInfos = params->info();
+            EventList paramEventQueue;
+            ParamFuzzer(paramInfos).randomizeParamsAt(prng, 0, paramEventQueue, zeroOutCookies);
+            std::vector<Event> paramEvents = paramEventQueue.events();
 
-        if (!stateExt->save(plugin->clapPlugin(), &ostream1))
-        {
-            return TestResult::failed(testName, description, "Failed to save initial state");
+            AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+            ProcessingTest(*plugin, host, buffers)
+                .runOnce(ProcessConfig{},
+                         [&](ProcessData &processData)
+                         {
+                             for (const auto &event : paramEvents)
+                             {
+                                 processData.inputEvents().push(event);
+                             }
+                         });
+
+            expectedValues = getAllParamValues(*params, paramInfos);
+            expectedState = saveState(stateExt, plugin->clapPlugin());
+            host->handleCallbacksOnce();
         }
 
-        // Create new plugin instance and load state
+        // Second instance: load the state and confirm the values and re-saved state match.
         auto plugin2 = library.createPlugin(pluginId, host);
         if (!plugin2->init())
         {
             return TestResult::failed(testName, description,
-                                      "Failed to initialize second plugin instance");
+                                      "Failed to initialize the second plugin instance");
         }
-
-        StateBuffer loadBuffer;
-        loadBuffer.data = stateBuffer1.data;
-        clap_istream_t istream = {};
-        istream.ctx = &loadBuffer;
-        istream.read = StateBuffer::read;
-
-        if (!stateExt->load(plugin2->clapPlugin(), &istream))
+        auto params2 = ParamsExt::create(*plugin2);
+        if (!params2)
         {
-            return TestResult::failed(testName, description, "Failed to load state");
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'params' extension.");
         }
-
-        // Save state again from second instance
-        StateBuffer stateBuffer2;
-        clap_ostream_t ostream2 = {};
-        ostream2.ctx = &stateBuffer2;
-        ostream2.write = StateBuffer::write;
-
-        if (!stateExt->save(plugin2->clapPlugin(), &ostream2))
+        const clap_plugin_state_t *stateExt2 =
+            static_cast<const clap_plugin_state_t *>(plugin2->getExtension(CLAP_EXT_STATE));
+        if (!stateExt2)
         {
-            return TestResult::failed(testName, description,
-                                      "Failed to save state from second instance");
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'state' extension.");
         }
+        host->handleCallbacksOnce();
 
-        // Compare states
-        if (stateBuffer1.data != stateBuffer2.data)
+        if (!loadState(stateExt2, plugin2->clapPlugin(), expectedState))
         {
-            return TestResult::failed(
-                testName, description,
-                "State mismatch: saved states are different after load/save cycle");
+            throw std::runtime_error("The plugin failed to load the state it had just saved.");
+        }
+        host->handleCallbacksOnce();
+
+        std::map<clap_id, double> actualValues = getAllParamValues(*params2, paramInfos);
+        if (actualValues != expectedValues)
+        {
+            throw std::runtime_error(
+                "After reloading the state, the plugin's parameter values do not match the saved "
+                "values. The mismatching values are " +
+                formatMismatchingValues(actualValues, expectedValues, params2->info()) + ".");
         }
 
-        return TestResult::success(testName, description);
+        std::vector<uint8_t> actualState = saveState(stateExt2, plugin2->clapPlugin());
+        host->handleCallbacksOnce();
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        if (actualState == expectedState)
+        {
+            return TestResult::success(testName, description);
+        }
+        return TestResult::failed(
+            testName, description,
+            "Re-saving the loaded state resulted in a different state file (" +
+                std::to_string(expectedState.size()) + " bytes expected, " +
+                std::to_string(actualState.size()) + " bytes actual).");
     }
     catch (const std::exception &e)
     {
@@ -1011,38 +1127,147 @@ TestResult PluginTests::testStateReproducibilityFlush(PluginLibrary &library,
 {
     const std::string testName = "state-reproducibility-flush";
     const std::string description =
-        "Tests state reproducibility using flush for parameter changes.";
+        "Randomizes a plugin's parameters, saves its state, recreates the plugin instance, sets "
+        "the same parameters as before, saves the state again, and then asserts that the two "
+        "states are identical. Uses the flush function for the first state.";
 
     try
     {
+        Prng prng = newPrng();
         auto host = std::make_shared<Host>();
-        auto plugin = library.createPlugin(pluginId, host);
 
-        if (!plugin->init())
+        std::vector<uint8_t> expectedState;
+        std::vector<Event> paramEvents;
+        std::map<clap_id, double> expectedValues;
+
+        // First instance: set parameters via params.flush(), then capture the state.
         {
-            return TestResult::failed(testName, description, "Failed to initialize plugin");
+            auto plugin = library.createPlugin(pluginId, host);
+            if (!plugin->init())
+            {
+                return TestResult::failed(testName, description, "Failed to initialize plugin");
+            }
+
+            auto params = ParamsExt::create(*plugin);
+            if (!params)
+            {
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'params' extension.");
+            }
+            const clap_plugin_state_t *stateExt =
+                static_cast<const clap_plugin_state_t *>(plugin->getExtension(CLAP_EXT_STATE));
+            if (!stateExt)
+            {
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'state' extension.");
+            }
+            host->handleCallbacksOnce();
+
+            ParamInfoMap paramInfos = params->info();
+            std::map<clap_id, double> initialValues = getAllParamValues(*params, paramInfos);
+
+            // The same events are used for flush here and for process() on the second instance.
+            EventList paramEventQueue;
+            ParamFuzzer(paramInfos).randomizeParamsAt(prng, 0, paramEventQueue);
+            paramEvents = paramEventQueue.events();
+
+            EventList inputEvents;
+            for (const auto &event : paramEvents)
+            {
+                inputEvents.push(event);
+            }
+            EventList outputEvents;
+            params->flush(inputEvents, outputEvents);
+            host->handleCallbacksOnce();
+
+            expectedValues = getAllParamValues(*params, paramInfos);
+            expectedState = saveState(stateExt, plugin->clapPlugin());
+            host->handleCallbacksOnce();
+
+            // If nothing changed, the plugin has probably not implemented flush.
+            if (expectedValues == initialValues && !paramInfos.empty())
+            {
+                throw std::runtime_error(
+                    "'clap_plugin_params::flush()' was called with random parameter values, but "
+                    "the plugin's reported parameter values did not change.");
+            }
         }
 
-        const clap_plugin_state_t *stateExt =
-            static_cast<const clap_plugin_state_t *>(plugin->getExtension(CLAP_EXT_STATE));
-
-        if (!stateExt)
+        // Second instance: set the same values via process() and confirm the state matches.
+        auto plugin2 = library.createPlugin(pluginId, host);
+        if (!plugin2->init())
+        {
+            return TestResult::failed(testName, description,
+                                      "Failed to initialize the second plugin instance");
+        }
+        auto audioConfig = AudioPortConfig::query(*plugin2).value_or(AudioPortConfig{});
+        auto params2 = ParamsExt::create(*plugin2);
+        if (!params2)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support state extension");
+                                       "The plugin does not implement the 'params' extension.");
         }
-
-        const clap_plugin_params_t *paramsExt =
-            static_cast<const clap_plugin_params_t *>(plugin->getExtension(CLAP_EXT_PARAMS));
-
-        if (!paramsExt)
+        const clap_plugin_state_t *stateExt2 =
+            static_cast<const clap_plugin_state_t *>(plugin2->getExtension(CLAP_EXT_STATE));
+        if (!stateExt2)
         {
             return TestResult::skipped(testName, description,
-                                       "Plugin does not support params extension");
+                                       "The plugin does not implement the 'state' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        // Reusing the events requires refreshing the cookies for this instance.
+        ParamInfoMap paramInfos2 = params2->info();
+        for (auto &event : paramEvents)
+        {
+            clap_id paramId = event.u.paramValue.param_id;
+            auto it = paramInfos2.find(paramId);
+            if (it == paramInfos2.end())
+            {
+                throw std::runtime_error("The second instance is missing parameter " +
+                                         std::to_string(paramId) + ".");
+            }
+            event.u.paramValue.cookie = it->second.cookie;
         }
 
-        // Basic test - verify state extension works
-        return TestResult::success(testName, description);
+        AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+        ProcessingTest(*plugin2, host, buffers)
+            .runOnce(ProcessConfig{},
+                     [&](ProcessData &processData)
+                     {
+                         for (const auto &event : paramEvents)
+                         {
+                             processData.inputEvents().push(event);
+                         }
+                     });
+
+        std::map<clap_id, double> actualValues = getAllParamValues(*params2, paramInfos2);
+        if (actualValues != expectedValues)
+        {
+            throw std::runtime_error(
+                "Setting the same parameter values through flush() and through the process "
+                "function "
+                "results in different reported values. The mismatching values are " +
+                formatMismatchingValues(actualValues, expectedValues, paramInfos2) + ".");
+        }
+
+        std::vector<uint8_t> actualState = saveState(stateExt2, plugin2->clapPlugin());
+        host->handleCallbacksOnce();
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        if (actualState == expectedState)
+        {
+            return TestResult::success(testName, description);
+        }
+        return TestResult::failed(
+            testName, description,
+            "Setting the same parameter values on two instances (one via flush, one via process) "
+            "resulted in different state files (" +
+                std::to_string(expectedState.size()) + " bytes vs " +
+                std::to_string(actualState.size()) + " bytes).");
     }
     catch (const std::exception &e)
     {
@@ -1054,80 +1279,124 @@ TestResult PluginTests::testStateBufferedStreams(PluginLibrary &library,
                                                  const std::string &pluginId)
 {
     const std::string testName = "state-buffered-streams";
-    const std::string description = "Tests state with small buffered reads.";
+    const std::string description =
+        "Performs the same state and parameter reproducibility check, but the plugin is only "
+        "allowed to read a small prime number of bytes at a time when reloading and resaving the "
+        "state.";
 
     try
     {
+        Prng prng = newPrng();
         auto host = std::make_shared<Host>();
-        auto plugin = library.createPlugin(pluginId, host);
 
-        if (!plugin->init())
+        std::vector<uint8_t> expectedState;
+        std::map<clap_id, double> expectedValues;
+        ParamInfoMap paramInfos;
+
+        // First instance: randomize parameters, then save the state unbuffered (ground truth).
         {
-            return TestResult::failed(testName, description, "Failed to initialize plugin");
-        }
-
-        const clap_plugin_state_t *stateExt =
-            static_cast<const clap_plugin_state_t *>(plugin->getExtension(CLAP_EXT_STATE));
-
-        if (!stateExt)
-        {
-            return TestResult::skipped(testName, description,
-                                       "Plugin does not support state extension");
-        }
-
-        // Save state
-        constexpr size_t CHUNK_SIZE = 7; // Small prime number
-
-        struct StateBuffer
-        {
-            std::vector<uint8_t> data;
-            size_t readPos = 0;
-            size_t chunkSize = 7;
-
-            static int64_t write(const clap_ostream_t *stream, const void *buffer, uint64_t size)
+            auto plugin = library.createPlugin(pluginId, host);
+            if (!plugin->init())
             {
-                auto *self = static_cast<StateBuffer *>(stream->ctx);
-                const uint8_t *bytes = static_cast<const uint8_t *>(buffer);
-                self->data.insert(self->data.end(), bytes, bytes + size);
-                return static_cast<int64_t>(size);
+                return TestResult::failed(testName, description, "Failed to initialize plugin");
             }
 
-            static int64_t readBuffered(const clap_istream_t *stream, void *buffer, uint64_t size)
+            auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+            auto params = ParamsExt::create(*plugin);
+            if (!params)
             {
-                auto *self = static_cast<StateBuffer *>(stream->ctx);
-                size_t available = self->data.size() - self->readPos;
-                size_t toRead = std::min({static_cast<size_t>(size), available, self->chunkSize});
-                if (toRead > 0)
-                {
-                    std::memcpy(buffer, self->data.data() + self->readPos, toRead);
-                    self->readPos += toRead;
-                }
-                return static_cast<int64_t>(toRead);
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'params' extension.");
             }
-        };
+            const clap_plugin_state_t *stateExt =
+                static_cast<const clap_plugin_state_t *>(plugin->getExtension(CLAP_EXT_STATE));
+            if (!stateExt)
+            {
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'state' extension.");
+            }
+            host->handleCallbacksOnce();
 
-        StateBuffer stateBuffer;
-        clap_ostream_t ostream = {};
-        ostream.ctx = &stateBuffer;
-        ostream.write = StateBuffer::write;
+            paramInfos = params->info();
+            EventList paramEventQueue;
+            ParamFuzzer(paramInfos).randomizeParamsAt(prng, 0, paramEventQueue);
+            std::vector<Event> paramEvents = paramEventQueue.events();
 
-        if (!stateExt->save(plugin->clapPlugin(), &ostream))
-        {
-            return TestResult::failed(testName, description, "Failed to save state");
+            AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+            ProcessingTest(*plugin, host, buffers)
+                .runOnce(ProcessConfig{},
+                         [&](ProcessData &processData)
+                         {
+                             for (const auto &event : paramEvents)
+                             {
+                                 processData.inputEvents().push(event);
+                             }
+                         });
+
+            expectedValues = getAllParamValues(*params, paramInfos);
+            expectedState = saveState(stateExt, plugin->clapPlugin());
+            host->handleCallbacksOnce();
         }
 
-        // Load with buffered reads
-        clap_istream_t istream = {};
-        istream.ctx = &stateBuffer;
-        istream.read = StateBuffer::readBuffered;
+        // Second instance: load with small chunked reads and re-save with small chunked writes.
+        constexpr size_t kBufferedLoadMaxBytes = 17;
+        constexpr size_t kBufferedSaveMaxBytes = 23;
 
-        if (!stateExt->load(plugin->clapPlugin(), &istream))
+        auto plugin2 = library.createPlugin(pluginId, host);
+        if (!plugin2->init())
         {
             return TestResult::failed(testName, description,
-                                      "Failed to load state with buffered reads");
+                                      "Failed to initialize the second plugin instance");
+        }
+        auto params2 = ParamsExt::create(*plugin2);
+        if (!params2)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'params' extension.");
+        }
+        const clap_plugin_state_t *stateExt2 =
+            static_cast<const clap_plugin_state_t *>(plugin2->getExtension(CLAP_EXT_STATE));
+        if (!stateExt2)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'state' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        if (!loadState(stateExt2, plugin2->clapPlugin(), expectedState, kBufferedLoadMaxBytes))
+        {
+            throw std::runtime_error(
+                "The plugin failed to load the state when only allowed to read " +
+                std::to_string(kBufferedLoadMaxBytes) + " bytes at a time.");
+        }
+        host->handleCallbacksOnce();
+
+        std::map<clap_id, double> actualValues = getAllParamValues(*params2, paramInfos);
+        if (actualValues != expectedValues)
+        {
+            throw std::runtime_error(
+                "After reloading the state with buffered reads, the plugin's parameter values do "
+                "not match the saved values. The mismatching values are " +
+                formatMismatchingValues(actualValues, expectedValues, params2->info()) + ".");
         }
 
-        return TestResult::success(testName, description);
+        std::vector<uint8_t> actualState =
+            saveState(stateExt2, plugin2->clapPlugin(), kBufferedSaveMaxBytes);
+        host->handleCallbacksOnce();
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        if (actualState == expectedState)
+        {
+            return TestResult::success(testName, description);
+        }
+        return TestResult::failed(testName, description,
+                                  "Re-saving the loaded state with buffered streams resulted in a "
+                                  "different state file (" +
+                                      std::to_string(expectedState.size()) + " bytes expected, " +
+                                      std::to_string(actualState.size()) + " bytes actual).");
     }
     catch (const std::exception &e)
     {
