@@ -574,44 +574,50 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
 
             for (double startingValue : values)
             {
+                // Build up a human-readable description of the roundtrip as we go, so failure
+                // messages can show exactly what was converted into what.
+                std::string chain = "set " + std::to_string(startingValue);
+
                 // If the plugin rounds string representations then a raw value may not roundtrip,
                 // so we start from the plugin's own string representation.
                 auto startingText = params->valueToText(paramId, startingValue);
                 if (!startingText)
                 {
                     // value_to_text unsupported for this parameter; skip the rest of it.
-                    failedValueToText.push_back("parameter '" + info.name + "' at value " +
-                                                std::to_string(startingValue));
+                    failedValueToText.push_back("parameter '" + info.name + "': " + chain +
+                                                " -> value_to_text unsupported");
                     break;
                 }
                 numSupportedValueToText++;
+                chain += " -> '" + *startingText + "'";
 
                 auto reconvertedValue = params->textToValue(paramId, *startingText);
                 if (!reconvertedValue)
                 {
                     // text_to_value unsupported; keep testing value_to_text on the next value.
-                    failedTextToValue.push_back("parameter '" + info.name + "': text_to_value('" +
-                                                *startingText + "') unsupported (value " +
-                                                std::to_string(startingValue) + ")");
+                    failedTextToValue.push_back("parameter '" + info.name + "': " + chain +
+                                                " -> text_to_value unsupported");
                     continue;
                 }
                 numSupportedTextToValue++;
+                chain += " -> " + std::to_string(*reconvertedValue);
 
                 auto reconvertedText = params->valueToText(paramId, *reconvertedValue);
                 if (!reconvertedText)
                 {
                     throw std::runtime_error("Repeated value-to-text conversion failed for "
                                              "parameter '" +
-                                             info.name + "'.");
+                                             info.name + "' (" + chain + ").");
                 }
+                chain += " -> '" + *reconvertedText + "'";
+
                 // Both strings come from the plugin, so they should be identical.
                 if (*startingText != *reconvertedText)
                 {
-                    throw std::runtime_error(
-                        "Converting a value to a string, back to a value, and back to a string for "
-                        "parameter '" +
-                        info.name + "' produced '" + *startingText + "' -> '" + *reconvertedText +
-                        "', which is not consistent.");
+                    throw std::runtime_error("Value/string conversions for parameter '" +
+                                             info.name + "' are not consistent: " + chain + " ('" +
+                                             *reconvertedText + "' should equal '" + *startingText +
+                                             "').");
                 }
 
                 auto finalValue = params->textToValue(paramId, *reconvertedText);
@@ -619,13 +625,16 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 {
                     throw std::runtime_error("Repeated text-to-value conversion failed for "
                                              "parameter '" +
-                                             info.name + "'.");
+                                             info.name + "' (" + chain + ").");
                 }
+                chain += " -> " + std::to_string(*finalValue);
+
                 if (*finalValue != *reconvertedValue)
                 {
-                    throw std::runtime_error(
-                        "Repeatedly converting parameter '" + info.name +
-                        "' between values and strings does not roundtrip consistently.");
+                    throw std::runtime_error("Value/string conversions for parameter '" +
+                                             info.name + "' do not roundtrip: " + chain + " (" +
+                                             std::to_string(*finalValue) + " should equal " +
+                                             std::to_string(*reconvertedValue) + ").");
                 }
             }
         }
