@@ -55,6 +55,11 @@ struct PluginLibraryMetadata
     }
 };
 
+// Resolve the path that should be handed to dlopen/LoadLibrary for a .clap. On macOS a .clap is a
+// bundle (directory), so this returns the executable inside it; on other platforms it returns the
+// path unchanged.
+std::filesystem::path resolveClapModulePath(const std::filesystem::path &clapPath);
+
 // Forward declarations
 class Host;
 class Plugin;

@@ -203,8 +203,11 @@ TestResult PluginLibraryTests::testScanRtldNow(const std::filesystem::path &libr
 #if defined(__unix__) || defined(__APPLE__)
     try
     {
+        // On macOS a .clap is a bundle, so resolve the executable inside it before dlopen.
+        std::filesystem::path modulePath = resolveClapModulePath(libraryPath);
+
         // Try to load the library with RTLD_NOW to catch any unresolved symbols
-        void *handle = dlopen(libraryPath.c_str(), RTLD_LOCAL | RTLD_NOW);
+        void *handle = dlopen(modulePath.c_str(), RTLD_LOCAL | RTLD_NOW);
         if (!handle)
         {
             const char *error = dlerror();

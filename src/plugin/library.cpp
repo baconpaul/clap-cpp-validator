@@ -76,11 +76,9 @@ PluginLibrary::~PluginLibrary()
     }
 }
 
-std::unique_ptr<PluginLibrary> PluginLibrary::load(const std::filesystem::path &path)
+std::filesystem::path resolveClapModulePath(const std::filesystem::path &clapPath)
 {
-    // Make sure path is absolute
-    std::filesystem::path absolutePath = std::filesystem::absolute(path);
-    std::filesystem::path libraryPath = absolutePath;
+    std::filesystem::path absolutePath = std::filesystem::absolute(clapPath);
 
 #ifdef __APPLE__
     // On macOS, .clap files are bundles - we need to find the actual executable inside
@@ -121,9 +119,18 @@ std::unique_ptr<PluginLibrary> PluginLibrary::load(const std::filesystem::path &
         }
         CFRelease(executableUrl);
 
-        libraryPath = executablePath;
+        return std::filesystem::path(executablePath);
     }
 #endif
+
+    return absolutePath;
+}
+
+std::unique_ptr<PluginLibrary> PluginLibrary::load(const std::filesystem::path &path)
+{
+    // Make sure path is absolute
+    std::filesystem::path absolutePath = std::filesystem::absolute(path);
+    std::filesystem::path libraryPath = resolveClapModulePath(absolutePath);
 
     // Load the library
     void *handle = nullptr;
