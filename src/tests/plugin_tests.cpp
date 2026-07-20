@@ -248,7 +248,12 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
          "before any state is loaded."},
         {"param-info-stable", "Checks that the plugin's parameter information (ids, cookies, "
                               "ranges, flags) is identical "
-                              "across repeated queries."}};
+                              "across repeated queries."},
+        {"audio-ports-config",
+         "If the plugin implements the 'audio-ports-config' extension, enumerates its port "
+         "configurations, selects each one, and checks that the plugin's audio ports then match "
+         "the "
+         "selected configuration."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -346,6 +351,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "param-info-stable")
     {
         return testParamInfoStable(library, pluginId);
+    }
+    else if (testName == "audio-ports-config")
+    {
+        return testAudioPortsConfig(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2156,6 +2165,136 @@ TestResult PluginTests::testParamInfoStable(PluginLibrary &library, const std::s
         }
         return TestResult::success(testName, description,
                                    std::to_string(first.size()) + " parameter(s) with stable info");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testAudioPortsConfig(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "audio-ports-config";
+    const std::string description =
+        "If the plugin implements the 'audio-ports-config' extension, enumerates its port "
+        "configurations, selects each one, and checks that the plugin's audio ports then match the "
+        "selected configuration.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *config = static_cast<const clap_plugin_audio_ports_config_t *>(
+            plugin->getExtension(CLAP_EXT_AUDIO_PORTS_CONFIG));
+        if (!config || !config->count || !config->get || !config->select)
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin does not implement the 'audio-ports-config' extension.");
+        }
+        const auto *ports = static_cast<const clap_plugin_audio_ports_t *>(
+            plugin->getExtension(CLAP_EXT_AUDIO_PORTS));
+        host->handleCallbacksOnce();
+
+        const clap_plugin_t *cp = plugin->clapPlugin();
+
+        uint32_t count = config->count(cp);
+        std::vector<clap_audio_ports_config_t> configs;
+        std::set<clap_id> seenIds;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            clap_audio_ports_config_t c = {};
+            if (!config->get(cp, i, &c))
+            {
+                return TestResult::failed(testName, description,
+                                          "'audio_ports_config.get(" + std::to_string(i) +
+                                              ")' returned false (" + std::to_string(count) +
+                                              " configs reported).");
+            }
+            if (!seenIds.insert(c.id).second)
+            {
+                return TestResult::failed(testName, description,
+                                          "Two audio port configurations share the id " +
+                                              std::to_string(c.id) + ".");
+            }
+            configs.push_back(c);
+        }
+
+        // The plugin is inactive here, so 'select()' is allowed.
+        for (const auto &c : configs)
+        {
+            std::string configName(c.name, ::strnlen(c.name, sizeof(c.name)));
+            if (!config->select(cp, c.id))
+            {
+                return TestResult::failed(testName, description,
+                                          "'audio_ports_config.select()' returned false for the "
+                                          "advertised configuration '" +
+                                              configName + "'.");
+            }
+            if (!ports || !ports->count)
+            {
+                continue;
+            }
+            uint32_t numInputs = ports->count(cp, true);
+            uint32_t numOutputs = ports->count(cp, false);
+            if (numInputs != c.input_port_count || numOutputs != c.output_port_count)
+            {
+                return TestResult::failed(testName, description,
+                                          "After selecting configuration '" + configName +
+                                              "', the plugin reports " + std::to_string(numInputs) +
+                                              " input and " + std::to_string(numOutputs) +
+                                              " output ports, but the configuration declares " +
+                                              std::to_string(c.input_port_count) + " and " +
+                                              std::to_string(c.output_port_count) + ".");
+            }
+
+            // The main port must be at index 0 (see audio-ports.h). Verify its channel count.
+            auto checkMain = [&](bool isInput, bool hasMain, uint32_t mainChannels,
+                                 const std::string &which) -> std::optional<std::string>
+            {
+                if (!hasMain || !ports->get)
+                {
+                    return std::nullopt;
+                }
+                clap_audio_port_info_t info = {};
+                if (!ports->get(cp, 0, isInput, &info))
+                {
+                    return "after selecting configuration '" + configName +
+                           "', the plugin's main " + which +
+                           " port (index 0) could not be queried.";
+                }
+                if (info.channel_count != mainChannels)
+                {
+                    return "after selecting configuration '" + configName +
+                           "', the plugin's main " + which + " port has " +
+                           std::to_string(info.channel_count) +
+                           " channels, but the configuration declares " +
+                           std::to_string(mainChannels) + ".";
+                }
+                return std::nullopt;
+            };
+            if (auto err = checkMain(true, c.has_main_input, c.main_input_channel_count, "input"))
+            {
+                return TestResult::failed(testName, description, *err);
+            }
+            if (auto err =
+                    checkMain(false, c.has_main_output, c.main_output_channel_count, "output"))
+            {
+                return TestResult::failed(testName, description, *err);
+            }
+        }
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description,
+                                   std::to_string(count) + " audio port configuration(s)");
     }
     catch (const std::exception &e)
     {

@@ -48,7 +48,7 @@ The plugin provides these; the host reads them and asserts invariants. Cheap, sa
 | `render` ✅ | S | `set(REALTIME)` accepted; a hard-realtime plugin rejects `OFFLINE`. **Implemented.** |
 | `voice-info` ✅ | S | `1 ≤ voice_count ≤ voice_capacity` while active. **Implemented.** |
 | `note-name` ✅ | S | Enumerate; validate key (`-1`/`0..127`), channel, and port ranges. **Implemented.** |
-| `audio-ports-config` ★ | M | Enumerate configs (unique ids); `select` each; confirm `audio-ports` then reflects the selected layout. |
+| `audio-ports-config` ★ ✅ | M | Enumerate configs (unique ids); `select` each; confirm `audio-ports` then reflects the selected layout. **Implemented.** |
 | `remote-controls` ★ | M | Enumerate pages; every `param_id` exists in `params`; unique page ids; correct slot count. |
 | `state-context` ★ | M | Reproducibility per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE`; agrees with plain `state`. |
 | `audio-ports-activation` / `configurable-audio-ports` / `extensible-audio-ports` | M | Exercise (de)activation & reconfiguration APIs, then re-check `audio-ports`. |
