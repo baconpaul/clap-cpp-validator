@@ -225,3 +225,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `state-reproducibility-null-cookies` | same, with null param-event cookies |
 | `state-reproducibility-flush` | same, using `params.flush()` for the second instance |
 | `state-buffered-streams` | reproducibility with small chunked state reads/writes |
+| `context-menu` | the plugin's global and per-parameter `context-menu` items are well-formed (non-null labels/titles, balanced submenus, known kinds) |
+
+> `context-menu` is not part of the Rust validator; it is the first of the new-extension checks
+> from [validation-roadmap.md](validation-roadmap.md).

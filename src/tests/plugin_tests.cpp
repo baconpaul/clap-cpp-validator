@@ -220,7 +220,13 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"state-buffered-streams",
          "Performs the same state and parameter reproducibility check, but the plugin is only "
          "allowed to read a small prime number of bytes at a time when reloading and resaving the "
-         "state."}};
+         "state."},
+
+        // Other extension tests
+        {"context-menu",
+         "If the plugin implements the 'context-menu' extension, populates its global and "
+         "per-parameter context menus and checks that every menu item is well-formed: non-null "
+         "labels and titles, balanced submenus, and known item kinds."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -285,6 +291,11 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "state-buffered-streams")
     {
         return testStateBufferedStreams(library, pluginId);
+    }
+    // Other extension tests
+    else if (testName == "context-menu")
+    {
+        return testContextMenu(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -1470,6 +1481,202 @@ TestResult PluginTests::testStateBufferedStreams(PluginLibrary &library,
                                   "different state file (" +
                                       std::to_string(expectedState.size()) + " bytes expected, " +
                                       std::to_string(actualState.size()) + " bytes actual).");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+namespace
+{
+// A host-side context menu builder that validates every item the plugin adds while populating a
+// menu. Non-thread-safe by design (as the CLAP builder is); used only on the calling thread.
+struct MenuCollector
+{
+    std::optional<std::string> error;
+    int submenuDepth = 0;
+    size_t itemCount = 0;
+
+    clap_context_menu_builder_t builder{};
+
+    MenuCollector()
+    {
+        builder.ctx = this;
+        builder.add_item = &MenuCollector::addItem;
+        builder.supports = &MenuCollector::supports;
+    }
+
+    void reset()
+    {
+        error.reset();
+        submenuDepth = 0;
+        itemCount = 0;
+    }
+
+    void setError(const std::string &message)
+    {
+        if (!error)
+        {
+            error = message;
+        }
+    }
+
+    static bool CLAP_ABI addItem(const clap_context_menu_builder_t *builder,
+                                 clap_context_menu_item_kind_t itemKind, const void *itemData)
+    {
+        auto *self = static_cast<MenuCollector *>(builder->ctx);
+        self->itemCount++;
+
+        switch (itemKind)
+        {
+        case CLAP_CONTEXT_MENU_ITEM_ENTRY:
+        {
+            const auto *entry = static_cast<const clap_context_menu_entry_t *>(itemData);
+            if (!entry || !entry->label)
+            {
+                self->setError("an ENTRY item has a null label");
+                return false;
+            }
+            break;
+        }
+        case CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY:
+        {
+            const auto *entry = static_cast<const clap_context_menu_check_entry_t *>(itemData);
+            if (!entry || !entry->label)
+            {
+                self->setError("a CHECK_ENTRY item has a null label");
+                return false;
+            }
+            break;
+        }
+        case CLAP_CONTEXT_MENU_ITEM_SEPARATOR:
+            break;
+        case CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU:
+        {
+            const auto *submenu = static_cast<const clap_context_menu_submenu_t *>(itemData);
+            if (!submenu || !submenu->label)
+            {
+                self->setError("a BEGIN_SUBMENU item has a null label");
+                return false;
+            }
+            self->submenuDepth++;
+            break;
+        }
+        case CLAP_CONTEXT_MENU_ITEM_END_SUBMENU:
+            self->submenuDepth--;
+            if (self->submenuDepth < 0)
+            {
+                self->setError("an END_SUBMENU item has no matching BEGIN_SUBMENU");
+                return false;
+            }
+            break;
+        case CLAP_CONTEXT_MENU_ITEM_TITLE:
+        {
+            const auto *title = static_cast<const clap_context_menu_item_title_t *>(itemData);
+            if (!title || !title->title)
+            {
+                self->setError("a TITLE item has a null title");
+                return false;
+            }
+            break;
+        }
+        default:
+            self->setError("an unknown context menu item kind " + std::to_string(itemKind) +
+                           " was added");
+            return false;
+        }
+        return true;
+    }
+
+    static bool CLAP_ABI supports(const clap_context_menu_builder_t *,
+                                  clap_context_menu_item_kind_t itemKind)
+    {
+        // We support all of the standard item kinds.
+        return itemKind <= CLAP_CONTEXT_MENU_ITEM_TITLE;
+    }
+};
+} // namespace
+
+TestResult PluginTests::testContextMenu(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "context-menu";
+    const std::string description =
+        "If the plugin implements the 'context-menu' extension, populates its global and "
+        "per-parameter context menus and checks that every menu item is well-formed: non-null "
+        "labels and titles, balanced submenus, and known item kinds.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *menu = static_cast<const clap_plugin_context_menu_t *>(
+            plugin->getExtension(CLAP_EXT_CONTEXT_MENU));
+        if (!menu)
+        {
+            menu = static_cast<const clap_plugin_context_menu_t *>(
+                plugin->getExtension(CLAP_EXT_CONTEXT_MENU_COMPAT));
+        }
+        if (!menu || !menu->populate)
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin does not implement the 'context-menu' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        MenuCollector collector;
+
+        // Populate the menu for a target and validate the items the plugin added. Returns an error
+        // description if the menu was malformed.
+        auto validate = [&](const clap_context_menu_target_t *target,
+                            const std::string &targetName) -> std::optional<std::string>
+        {
+            collector.reset();
+            menu->populate(plugin->clapPlugin(), target, &collector.builder);
+            if (collector.error)
+            {
+                return "The " + targetName + " is malformed: " + *collector.error + ".";
+            }
+            if (collector.submenuDepth != 0)
+            {
+                return "The " + targetName + " has " + std::to_string(collector.submenuDepth) +
+                       " unclosed submenu(s).";
+            }
+            return std::nullopt;
+        };
+
+        // A null target means the global context.
+        if (auto err = validate(nullptr, "global context menu"))
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+
+        // And a per-parameter menu for each parameter, if the plugin has any.
+        if (auto params = ParamsExt::create(*plugin))
+        {
+            for (const auto &entry : params->info())
+            {
+                clap_context_menu_target_t target{CLAP_CONTEXT_MENU_TARGET_KIND_PARAM, entry.first};
+                if (auto err =
+                        validate(&target, "context menu for parameter '" + entry.second.name + "'"))
+                {
+                    return TestResult::failed(testName, description, *err);
+                }
+            }
+        }
+
+        host->handleCallbacksOnce();
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
     {

@@ -71,6 +71,9 @@ class PluginTests
                                                     const std::string &pluginId);
     static TestResult testStateBufferedStreams(PluginLibrary &library, const std::string &pluginId);
 
+    // Other extension tests (not present in the Rust validator)
+    static TestResult testContextMenu(PluginLibrary &library, const std::string &pluginId);
+
   private:
     // Helper for state reproducibility tests with optional null cookies
     static TestResult testStateReproducibilityImpl(PluginLibrary &library,

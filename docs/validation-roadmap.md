@@ -53,7 +53,7 @@ The plugin provides these; the host reads them and asserts invariants. Cheap, sa
 | `state-context` ★ | M | Reproducibility per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE`; agrees with plain `state`. |
 | `audio-ports-activation` / `configurable-audio-ports` / `extensible-audio-ports` | M | Exercise (de)activation & reconfiguration APIs, then re-check `audio-ports`. |
 | `param-indication` | S | Call `set_mapping`/`set_automation`; smoke-test for no crash and correct thread. |
-| `context-menu` | M | `populate` a target; validate the returned entry structure. |
+| `context-menu` ✅ | M | `populate` a target; validate the returned entry structure. **Implemented** (`context-menu` check). |
 | `gui` | M | `is_api_supported`/`get_preferred_api`; create → get_size → destroy **without showing**; `can_resize`/`adjust_size` sanity. Platform-sensitive. |
 | `surround` / `ambisonic` | M | Channel-mask / channel-map queries. Niche. |
 
