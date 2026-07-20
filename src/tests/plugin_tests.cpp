@@ -139,10 +139,11 @@ std::string formatTruncatedList(const std::vector<std::string> &items)
 }
 
 // Build a human-readable, truncated list of the parameters whose values differ. The result is a
-// multi-line block (each entry on its own line) meant to follow a trailing ':'.
+// multi-line block (each entry on its own line) meant to follow a trailing ':'. When detailed is
+// set, each entry also carries the module (if non-empty) and the actual/expected ratio.
 std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
                                     const std::map<clap_id, double> &expected,
-                                    const ParamInfoMap &infos)
+                                    const ParamInfoMap &infos, bool detailed = false)
 {
     std::vector<std::string> items;
     for (const auto &[id, actualValue] : actual)
@@ -154,9 +155,26 @@ std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
             continue;
         }
         std::string name = infos.count(id) ? infos.at(id).name : std::string();
-        items.push_back("parameter " + std::to_string(id) + " ('" + name + "'): expected " +
-                        formatDouble(expectedValue) + ", actual " + formatDouble(actualValue) +
-                        " (diff " + formatDouble(actualValue - expectedValue, 6) + ")");
+        std::string label = "parameter " + std::to_string(id) + " ('" + name + "'";
+        if (detailed)
+        {
+            const std::string &module = infos.count(id) ? infos.at(id).module : std::string();
+            if (!module.empty())
+            {
+                label += ", module '" + module + "'";
+            }
+        }
+        label += ")";
+        std::string delta = "diff " + formatDouble(actualValue - expectedValue, 6);
+        if (detailed)
+        {
+            // Ratio is undefined when the expected value is zero; report that rather than inf/nan.
+            delta +=
+                ", ratio " + (expectedValue != 0.0 ? formatDouble(actualValue / expectedValue, 6)
+                                                   : std::string("n/a (expected 0)"));
+        }
+        items.push_back(label + ": expected " + formatDouble(expectedValue) + ", actual " +
+                        formatDouble(actualValue) + " (" + delta + ")");
     }
     return formatTruncatedList(items);
 }
@@ -1543,7 +1561,8 @@ TestResult PluginTests::testStateReproducibilityFlush(PluginLibrary &library,
             throw std::runtime_error(
                 "Setting the same parameter values through flush() and through the process "
                 "function results in different reported values:" +
-                formatMismatchingValues(actualValues, expectedValues, paramInfos2));
+                formatMismatchingValues(actualValues, expectedValues, paramInfos2,
+                                        /*detailed=*/true));
         }
 
         std::vector<uint8_t> actualState = saveState(stateExt2, plugin2->clapPlugin());

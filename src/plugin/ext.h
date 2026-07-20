@@ -74,6 +74,7 @@ struct ParamInfo
 {
     clap_id id;
     std::string name;
+    std::string module; // path-like grouping, may be empty
     void *cookie;
     double minValue;
     double maxValue;

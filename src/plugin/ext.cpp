@@ -268,6 +268,7 @@ ParamInfoMap ParamsExt::info() const
         ParamInfo processed;
         processed.id = info.id;
         processed.name = name;
+        processed.module = fixedToString(info.module, CLAP_PATH_SIZE);
         processed.cookie = info.cookie;
         processed.minValue = info.min_value;
         processed.maxValue = info.max_value;
