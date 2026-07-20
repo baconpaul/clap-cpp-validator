@@ -82,10 +82,14 @@ that string is the stable identity across the two implementations.
 
 - **`PluginLibrary`** loads the `.clap` (a shared library / bundle), resolves the `clap_entry`
   point, exposes the plugin factory, and reads per-plugin metadata (id, name, features, …).
-- **`Host`** implements `clap_host` and the `thread-check`, `params`, `state`, and `log` host
-  extensions. The `log` sink prints `WARNING`+ messages (subject to `--show-plugin-stdout`) and turns
-  `PLUGIN_MISBEHAVING` messages into findings via the callback-error path. `HOST_MISBEHAVING` is
-  printed but not treated as a plugin failure, since it indicts the host rather than the plugin.
+- **`Host`** implements `clap_host` and a broad set of host extensions so plugins reach real
+  callbacks rather than null: `thread-check`, `params`, `state`, `log`, `audio-ports`, `note-ports`,
+  `latency`, `tail`, `note-name`, `voice-info`, and `preset-load`. Most are faithful no-ops that
+  assert the calling thread; the notable ones with findings are `log` (below) and `preset-load`
+  (`on_error` surfaces a failed preset load into the `preset-discovery-load` check). The `log` sink
+  prints `WARNING`+ messages (subject to `--show-plugin-stdout`) and turns `PLUGIN_MISBEHAVING`
+  messages into findings via the callback-error path; `HOST_MISBEHAVING` is printed but not treated
+  as a plugin failure, since it indicts the host rather than the plugin.
   It records the main-thread id and, via `AudioThreadGuard` (an RAII marker), the audio-thread id,
   so host callbacks made from the wrong thread are recorded as callback errors. `handleCallbacksOnce()`
   drains a pending `request_callback` by invoking the plugin's `on_main_thread`, and a pending

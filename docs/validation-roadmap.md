@@ -66,10 +66,10 @@ under-exercises them and can hide misbehavior.
 | Host extension | Effort | Why |
 |---|---|---|
 | `log` ★★ ✅ | S | Surface `CLAP_LOG_WARNING/ERROR/FATAL` and especially `*_MISBEHAVING` messages as findings — plugins report their own conformance problems here. **Implemented:** the host prints `WARNING`+ and treats `*_MISBEHAVING` as findings. |
-| `preset-load` (host side) ★ | S | Implement `on_error`/`loaded`; the current `preset-discovery-load` check misses `on_error` callbacks entirely. |
-| `timer-support` / `posix-fd-support` | S | Plugins commonly register these in `init()`; implementing them avoids null-host-ext paths. |
-| `thread-pool` | M | Implement `request_exec` so plugins that fan out work actually run and are validated. |
-| `changed()` callbacks for `latency`, `tail`, `note-name`, `voice-info`, `audio-ports`, `remote-controls` | S each | Mirror the existing `request_flush` pattern; lets us host faithfully and validate that changes happen at legal times (see Category 3). |
+| `preset-load` (host side) ★ ✅ | S | Implement `on_error`/`loaded`. **Implemented:** `on_error` now surfaces a failed preset load into the `preset-discovery-load` check. |
+| `timer-support` / `posix-fd-support` | S | Plugins commonly register these in `init()`; implementing them avoids null-host-ext paths. *(Not yet done.)* |
+| `thread-pool` | M | Implement `request_exec` so plugins that fan out work actually run and are validated. *(Not yet done.)* |
+| `changed()` callbacks for `latency`, `tail`, `note-name`, `voice-info`, `audio-ports` ✅ | S each | **Implemented** as faithful, thread-asserting host callbacks. (`remote-controls` host still to do.) |
 
 ### 1c. Untested factories
 

@@ -48,6 +48,24 @@ Host::Host() : mainThreadId_(std::this_thread::get_id())
 
     // Initialize log extension
     logExt_.log = &Host::logMessage;
+
+    // Initialize audio-ports host extension
+    audioPortsExt_.is_rescan_flag_supported = &Host::audioPortsIsRescanFlagSupported;
+    audioPortsExt_.rescan = &Host::audioPortsRescan;
+
+    // Initialize note-ports host extension
+    notePortsExt_.supported_dialects = &Host::notePortsSupportedDialects;
+    notePortsExt_.rescan = &Host::notePortsRescan;
+
+    // Initialize the "changed" notification extensions
+    latencyExt_.changed = &Host::latencyChanged;
+    tailExt_.changed = &Host::tailChanged;
+    noteNameExt_.changed = &Host::noteNameChanged;
+    voiceInfoExt_.changed = &Host::voiceInfoChanged;
+
+    // Initialize preset-load host extension
+    presetLoadExt_.on_error = &Host::presetLoadOnError;
+    presetLoadExt_.loaded = &Host::presetLoadLoaded;
 }
 
 Host::~Host() = default;
@@ -169,6 +187,35 @@ const void *CLAP_ABI Host::getExtension(const clap_host_t *host, const char *ext
     if (strcmp(extensionId, CLAP_EXT_LOG) == 0)
     {
         return &self->logExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_AUDIO_PORTS) == 0)
+    {
+        return &self->audioPortsExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_NOTE_PORTS) == 0)
+    {
+        return &self->notePortsExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_LATENCY) == 0)
+    {
+        return &self->latencyExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_TAIL) == 0)
+    {
+        return &self->tailExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_NOTE_NAME) == 0)
+    {
+        return &self->noteNameExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_VOICE_INFO) == 0)
+    {
+        return &self->voiceInfoExt_;
+    }
+    if (strcmp(extensionId, CLAP_EXT_PRESET_LOAD) == 0 ||
+        strcmp(extensionId, CLAP_EXT_PRESET_LOAD_COMPAT) == 0)
+    {
+        return &self->presetLoadExt_;
     }
 
     return nullptr;
@@ -308,6 +355,122 @@ void CLAP_ABI Host::logMessage(const clap_host_t *host, clap_log_severity severi
     {
         self->setCallbackError(std::string("The plugin logged a ") + level +
                                " message via clap_host_log: " + message);
+    }
+}
+
+bool CLAP_ABI Host::audioPortsIsRescanFlagSupported(const clap_host_t *host, uint32_t)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_audio_ports::is_rescan_flag_supported()");
+    }
+    // We accept a rescan of any aspect of the audio ports.
+    return true;
+}
+
+void CLAP_ABI Host::audioPortsRescan(const clap_host_t *host, uint32_t)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_audio_ports::rescan()");
+    }
+}
+
+uint32_t CLAP_ABI Host::notePortsSupportedDialects(const clap_host_t *host)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_note_ports::supported_dialects()");
+    }
+    // The dialects our note generator can actually produce (MIDI2 is intentionally excluded).
+    return CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_MIDI_MPE;
+}
+
+void CLAP_ABI Host::notePortsRescan(const clap_host_t *host, uint32_t)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_note_ports::rescan()");
+    }
+}
+
+void CLAP_ABI Host::latencyChanged(const clap_host_t *host)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_latency::changed()");
+    }
+}
+
+void CLAP_ABI Host::tailChanged(const clap_host_t *host)
+{
+    // clap_host_tail::changed() is documented [audio-thread]; we simply accept it.
+    (void)host;
+}
+
+void CLAP_ABI Host::noteNameChanged(const clap_host_t *host)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_note_name::changed()");
+    }
+}
+
+void CLAP_ABI Host::voiceInfoChanged(const clap_host_t *host)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_voice_info::changed()");
+    }
+}
+
+void CLAP_ABI Host::presetLoadOnError(const clap_host_t *host, uint32_t /*locationKind*/,
+                                      const char *location, const char *loadKey, int32_t osError,
+                                      const char *msg)
+{
+    Host *self = fromClapHost(host);
+    if (!self)
+    {
+        return;
+    }
+    self->assertMainThread("clap_host_preset_load::on_error()");
+
+    std::string message = "The plugin reported a preset load error";
+    if (msg)
+    {
+        message += ": ";
+        message += msg;
+    }
+    if (location)
+    {
+        message += " (location: ";
+        message += location;
+        message += ")";
+    }
+    if (loadKey)
+    {
+        message += " (load key: ";
+        message += loadKey;
+        message += ")";
+    }
+    message += " [os error " + std::to_string(osError) + "]";
+    self->setCallbackError(message);
+}
+
+void CLAP_ABI Host::presetLoadLoaded(const clap_host_t *host, uint32_t /*locationKind*/,
+                                     const char * /*location*/, const char * /*loadKey*/)
+{
+    Host *self = fromClapHost(host);
+    if (self)
+    {
+        self->assertMainThread("clap_host_preset_load::loaded()");
     }
 }
 

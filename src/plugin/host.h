@@ -90,6 +90,27 @@ class Host : public std::enable_shared_from_this<Host>
     static void CLAP_ABI logMessage(const clap_host_t *host, clap_log_severity severity,
                                     const char *msg);
 
+    // Audio-ports extension
+    static bool CLAP_ABI audioPortsIsRescanFlagSupported(const clap_host_t *host, uint32_t flag);
+    static void CLAP_ABI audioPortsRescan(const clap_host_t *host, uint32_t flags);
+
+    // Note-ports extension
+    static uint32_t CLAP_ABI notePortsSupportedDialects(const clap_host_t *host);
+    static void CLAP_ABI notePortsRescan(const clap_host_t *host, uint32_t flags);
+
+    // "changed" notifications
+    static void CLAP_ABI latencyChanged(const clap_host_t *host);
+    static void CLAP_ABI tailChanged(const clap_host_t *host);
+    static void CLAP_ABI noteNameChanged(const clap_host_t *host);
+    static void CLAP_ABI voiceInfoChanged(const clap_host_t *host);
+
+    // Preset-load extension
+    static void CLAP_ABI presetLoadOnError(const clap_host_t *host, uint32_t locationKind,
+                                           const char *location, const char *loadKey,
+                                           int32_t osError, const char *msg);
+    static void CLAP_ABI presetLoadLoaded(const clap_host_t *host, uint32_t locationKind,
+                                          const char *location, const char *loadKey);
+
     // Helper to get Host from clap_host pointer
     static Host *fromClapHost(const clap_host_t *host);
 
@@ -103,6 +124,13 @@ class Host : public std::enable_shared_from_this<Host>
     clap_host_params_t paramsExt_;
     clap_host_state_t stateExt_;
     clap_host_log_t logExt_;
+    clap_host_audio_ports_t audioPortsExt_;
+    clap_host_note_ports_t notePortsExt_;
+    clap_host_latency_t latencyExt_;
+    clap_host_tail_t tailExt_;
+    clap_host_note_name_t noteNameExt_;
+    clap_host_voice_info_t voiceInfoExt_;
+    clap_host_preset_load_t presetLoadExt_;
 
     std::thread::id mainThreadId_;
     std::atomic<std::thread::id> audioThreadId_;
