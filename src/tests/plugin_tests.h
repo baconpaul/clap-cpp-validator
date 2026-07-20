@@ -85,6 +85,7 @@ class PluginTests
     static TestResult testRemoteControls(PluginLibrary &library, const std::string &pluginId);
     static TestResult testStateContext(PluginLibrary &library, const std::string &pluginId);
     static TestResult testParamIndication(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testGetExtensionContract(PluginLibrary &library, const std::string &pluginId);
 
   private:
     // Helper for state reproducibility tests with optional null cookies

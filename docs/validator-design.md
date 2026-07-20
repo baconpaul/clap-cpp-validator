@@ -251,6 +251,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `remote-controls` | every `remote-controls` page queries, and each referenced parameter id exists |
 | `state-context` | state round-trips per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE` context and agrees with plain `state` |
 | `param-indication` | `set_mapping`/`set_automation` for every parameter (main-thread) does not crash or misbehave |
+| `get-extension-contract` | unknown ids return null; repeated `get_extension` calls return the same pointer, stable across activation |
 
 > `process-reactivation` and everything from `context-menu` down are not part of the Rust
 > validator; they are the new checks added from [validation-roadmap.md](validation-roadmap.md).

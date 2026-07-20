@@ -124,8 +124,9 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
   twice fails; `process` / `start_processing` before `activate` errors; `deactivate` while
   processing) remain a future extension — they are best driven under out-of-process isolation since
   a nonconformant plugin may crash.
-- **`get_extension` contract** (S) — returns the *same* pointer on repeated calls, `null` for
-  unknown ids, callable after `init`.
+- **`get_extension` contract** ✅ (S) — **Implemented** (`get-extension-contract`): returns the
+  *same* pointer on repeated calls, `null` for unknown ids, callable after `init`, and stable across
+  activation.
 - **Note lifecycle** (M) — a note-output plugin should emit `CLAP_EVENT_NOTE_END` for note-ids it
   finishes, referencing note-ids it actually started.
 - **Param range clamping / robustness** (S) — out-of-range parameter events must not yield

@@ -268,7 +268,11 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"param-indication",
          "If the plugin implements the 'param-indication' extension, sets and clears mapping and "
          "automation indications for every parameter on the main thread and checks that the plugin "
-         "does not crash or report misbehavior."}};
+         "does not crash or report misbehavior."},
+        {"get-extension-contract",
+         "Checks the 'clap_plugin.get_extension' contract: an unknown id returns null, repeated "
+         "queries for the same id return the same pointer, and those pointers stay stable across "
+         "activation."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -386,6 +390,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "param-indication")
     {
         return testParamIndication(library, pluginId);
+    }
+    else if (testName == "get-extension-contract")
+    {
+        return testGetExtensionContract(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2756,6 +2764,109 @@ TestResult PluginTests::testParamIndication(PluginLibrary &library, const std::s
                 indication->set_automation(cp, paramId, CLAP_PARAM_INDICATION_AUTOMATION_NONE,
                                            nullptr);
             }
+        }
+
+        host->handleCallbacksOnce();
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testGetExtensionContract(PluginLibrary &library,
+                                                 const std::string &pluginId)
+{
+    const std::string testName = "get-extension-contract";
+    const std::string description =
+        "Checks the 'clap_plugin.get_extension' contract: an unknown id returns null, repeated "
+        "queries for the same id return the same pointer, and those pointers stay stable across "
+        "activation.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        // Unknown ids must return null.
+        const char *bogusIds[] = {"", "org.bogus.nonexistent", "clap.params.WRONG",
+                                  "clap.audio-ports/999", "clap.gui.definitely-not-real"};
+        for (const char *id : bogusIds)
+        {
+            if (plugin->getExtension(id) != nullptr)
+            {
+                return TestResult::failed(testName, description,
+                                          "'get_extension' returned a non-null pointer for the "
+                                          "unknown extension id '" +
+                                              std::string(id) + "'.");
+            }
+        }
+
+        // A broad spread of plugin extension ids; whether or not the plugin implements each, the
+        // pointer it returns must be stable.
+        const char *knownIds[] = {CLAP_EXT_AUDIO_PORTS,
+                                  CLAP_EXT_NOTE_PORTS,
+                                  CLAP_EXT_PARAMS,
+                                  CLAP_EXT_STATE,
+                                  CLAP_EXT_STATE_CONTEXT,
+                                  CLAP_EXT_LATENCY,
+                                  CLAP_EXT_TAIL,
+                                  CLAP_EXT_RENDER,
+                                  CLAP_EXT_VOICE_INFO,
+                                  CLAP_EXT_NOTE_NAME,
+                                  CLAP_EXT_AUDIO_PORTS_CONFIG,
+                                  CLAP_EXT_REMOTE_CONTROLS,
+                                  CLAP_EXT_CONTEXT_MENU,
+                                  CLAP_EXT_PARAM_INDICATION,
+                                  CLAP_EXT_GUI,
+                                  CLAP_EXT_PRESET_LOAD,
+                                  CLAP_EXT_AUDIO_PORTS_ACTIVATION,
+                                  CLAP_EXT_CONFIGURABLE_AUDIO_PORTS,
+                                  CLAP_EXT_SURROUND,
+                                  CLAP_EXT_AMBISONIC,
+                                  CLAP_EXT_TRACK_INFO};
+
+        std::map<std::string, const void *> firstSeen;
+        for (const char *id : knownIds)
+        {
+            const void *p1 = plugin->getExtension(id);
+            const void *p2 = plugin->getExtension(id);
+            if (p1 != p2)
+            {
+                return TestResult::failed(testName, description,
+                                          "'get_extension' returned different pointers on two "
+                                          "consecutive calls for '" +
+                                              std::string(id) + "'.");
+            }
+            firstSeen[id] = p1;
+        }
+        host->handleCallbacksOnce();
+
+        // The pointers must not change across activation.
+        if (plugin->activate(44100.0, 1, BUFFER_SIZE))
+        {
+            for (const char *id : knownIds)
+            {
+                if (plugin->getExtension(id) != firstSeen[id])
+                {
+                    plugin->deactivate();
+                    return TestResult::failed(testName, description,
+                                              "'get_extension' returned a different pointer for '" +
+                                                  std::string(id) +
+                                                  "' after the plugin was "
+                                                  "activated.");
+                }
+            }
+            plugin->deactivate();
         }
 
         host->handleCallbacksOnce();
