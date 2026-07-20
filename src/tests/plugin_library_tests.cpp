@@ -20,8 +20,11 @@
 #include "../plugin/process.h"
 #include "../plugin/ext.h"
 #include "processing_test.h"
+#include <clap/factory/draft/plugin-invalidation.h>
+#include <clap/factory/draft/plugin-state-converter.h>
 #include <chrono>
 #include <map>
+#include <optional>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
@@ -51,7 +54,14 @@ std::vector<TestCaseInfo> PluginLibraryTests::getAllTests()
          "stored in the providers created by the factory."},
         {"preset-discovery-load",
          "The same as 'preset-discovery-crawl', but also tries to load all found presets for "
-         "plugins supported by the CLAP plugin library."}};
+         "plugins supported by the CLAP plugin library."},
+        {"factory-invalidation",
+         "If the plugin implements the 'plugin-invalidation' factory, checks that every declared "
+         "invalidation source has an absolute directory and a filename glob."},
+        {"factory-state-converter",
+         "If the plugin implements the 'plugin-state-converter' factory, validates each "
+         "converter's "
+         "descriptor and that a created converter reports a matching descriptor."}};
 }
 
 TestResult PluginLibraryTests::runTest(const std::string &testName,
@@ -84,6 +94,14 @@ TestResult PluginLibraryTests::runTest(const std::string &testName,
     else if (testName == "preset-discovery-load")
     {
         return testPresetDiscoveryLoad(libraryPath);
+    }
+    else if (testName == "factory-invalidation")
+    {
+        return testFactoryInvalidation(libraryPath);
+    }
+    else if (testName == "factory-state-converter")
+    {
+        return testFactoryStateConverter(libraryPath);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -405,6 +423,174 @@ TestResult PluginLibraryTests::testPresetDiscoveryLoad(const std::filesystem::pa
                            "presets for plugins "
                            "supported by the CLAP plugin library.",
                            true);
+}
+
+TestResult PluginLibraryTests::testFactoryInvalidation(const std::filesystem::path &libraryPath)
+{
+    const std::string testName = "factory-invalidation";
+    const std::string description =
+        "If the plugin implements the 'plugin-invalidation' factory, checks that every declared "
+        "invalidation source has an absolute directory and a filename glob.";
+
+    try
+    {
+        auto library = PluginLibrary::load(libraryPath);
+        const auto *factory = static_cast<const clap_plugin_invalidation_factory_t *>(
+            library->getEntryPoint()->get_factory(CLAP_PLUGIN_INVALIDATION_FACTORY_ID));
+        if (!factory)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the '" +
+                                           std::string(CLAP_PLUGIN_INVALIDATION_FACTORY_ID) +
+                                           "' factory.");
+        }
+
+        uint32_t count = factory->count(factory);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const auto *source = factory->get(factory, i);
+            if (!source)
+            {
+                return TestResult::failed(testName, description,
+                                          "Invalidation source " + std::to_string(i) + " is null.");
+            }
+            if (!source->directory || source->directory[0] == '\0')
+            {
+                return TestResult::failed(testName, description,
+                                          "Invalidation source " + std::to_string(i) +
+                                              " has an empty directory.");
+            }
+            // The header requires the source directory to be absolute.
+            if (!std::filesystem::path(source->directory).is_absolute())
+            {
+                return TestResult::failed(testName, description,
+                                          "Invalidation source " + std::to_string(i) +
+                                              " directory '" + source->directory +
+                                              "' is not absolute.");
+            }
+            if (!source->filename_glob || source->filename_glob[0] == '\0')
+            {
+                return TestResult::failed(testName, description,
+                                          "Invalidation source " + std::to_string(i) +
+                                              " has an empty filename glob.");
+            }
+        }
+
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginLibraryTests::testFactoryStateConverter(const std::filesystem::path &libraryPath)
+{
+    const std::string testName = "factory-state-converter";
+    const std::string description =
+        "If the plugin implements the 'plugin-state-converter' factory, validates each converter's "
+        "descriptor and that a created converter reports a matching descriptor.";
+
+    try
+    {
+        auto library = PluginLibrary::load(libraryPath);
+        const auto *factory = static_cast<const clap_plugin_state_converter_factory_t *>(
+            library->getEntryPoint()->get_factory(CLAP_PLUGIN_STATE_CONVERTER_FACTORY_ID));
+        if (!factory)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the '" +
+                                           std::string(CLAP_PLUGIN_STATE_CONVERTER_FACTORY_ID) +
+                                           "' factory.");
+        }
+
+        auto checkPluginId = [](const clap_universal_plugin_id_t &pid, const char *which,
+                                uint32_t i) -> std::optional<std::string>
+        {
+            if (!pid.abi || pid.abi[0] == '\0')
+            {
+                return "Converter " + std::to_string(i) + " has an empty " + which + " plugin ABI.";
+            }
+            if (!pid.id || pid.id[0] == '\0')
+            {
+                return "Converter " + std::to_string(i) + " has an empty " + which + " plugin id.";
+            }
+            return std::nullopt;
+        };
+
+        uint32_t count = factory->count(factory);
+        std::vector<std::string> seenIds;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const auto *desc = factory->get_descriptor(factory, i);
+            if (!desc)
+            {
+                return TestResult::failed(testName, description,
+                                          "Converter descriptor " + std::to_string(i) +
+                                              " is null.");
+            }
+            if (!desc->id || desc->id[0] == '\0')
+            {
+                return TestResult::failed(testName, description,
+                                          "Converter " + std::to_string(i) +
+                                              " has an empty id (mandatory).");
+            }
+            std::string id = desc->id;
+            if (!desc->name || desc->name[0] == '\0')
+            {
+                return TestResult::failed(testName, description,
+                                          "Converter '" + id + "' has an empty name (mandatory).");
+            }
+            if (auto err = checkPluginId(desc->src_plugin_id, "source", i))
+            {
+                return TestResult::failed(testName, description, *err);
+            }
+            if (auto err = checkPluginId(desc->dst_plugin_id, "destination", i))
+            {
+                return TestResult::failed(testName, description, *err);
+            }
+
+            for (const auto &seen : seenIds)
+            {
+                if (seen == id)
+                {
+                    return TestResult::failed(testName, description,
+                                              "Multiple state converters share the id '" + id +
+                                                  "'.");
+                }
+            }
+            seenIds.push_back(id);
+
+            // A converter created from the factory must report the same descriptor the factory did.
+            clap_plugin_state_converter_t *converter = factory->create(factory, desc->id);
+            if (!converter)
+            {
+                return TestResult::failed(testName, description,
+                                          "The factory could not create the converter '" + id +
+                                              "'.");
+            }
+            const auto *cdesc = converter->desc;
+            bool matches = cdesc && cdesc->id && id == cdesc->id && cdesc->name && desc->name &&
+                           std::string(desc->name) == cdesc->name;
+            if (converter->destroy)
+            {
+                converter->destroy(converter);
+            }
+            if (!matches)
+            {
+                return TestResult::failed(testName, description,
+                                          "The converter created for '" + id +
+                                              "' reports a descriptor that differs from the "
+                                              "factory's.");
+            }
+        }
+
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
 }
 
 } // namespace clap_validator

@@ -44,9 +44,13 @@ class PluginLibraryTests
 
     // Preset discovery tests
     static TestResult testPresetDiscoveryCrawl(const std::filesystem::path &libraryPath);
-    static TestResult testPresetDiscoveryDescriptorConsistency(
-        const std::filesystem::path &libraryPath);
+    static TestResult
+    testPresetDiscoveryDescriptorConsistency(const std::filesystem::path &libraryPath);
     static TestResult testPresetDiscoveryLoad(const std::filesystem::path &libraryPath);
+
+    // Draft-factory tests (not present in the Rust validator)
+    static TestResult testFactoryInvalidation(const std::filesystem::path &libraryPath);
+    static TestResult testFactoryStateConverter(const std::filesystem::path &libraryPath);
 
   private:
     static constexpr int SCAN_TIME_LIMIT_MS = 100;

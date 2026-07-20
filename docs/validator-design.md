@@ -213,6 +213,8 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `preset-discovery-crawl` | every declared preset location can be indexed |
 | `preset-discovery-descriptor-consistency` | provider descriptors match the factory's |
 | `preset-discovery-load` | every discovered preset can be loaded and processed |
+| `factory-invalidation` | each `plugin-invalidation` source has an absolute directory and a glob |
+| `factory-state-converter` | each `plugin-state-converter` descriptor is well-formed and `create()` agrees with it |
 
 ### Per-plugin checks
 

@@ -75,8 +75,8 @@ under-exercises them and can hide misbehavior.
 
 | Factory | Effort | What a check verifies |
 |---|---|---|
-| `plugin-invalidation` | S | Enumerate invalidation sources; validate the declared paths. |
-| `plugin-state-converter` ★ | M | Enumerate converters; validate src/dst descriptors; optionally convert a saved state and load it into the target plugin. |
+| `plugin-invalidation` ✅ | S | Enumerate invalidation sources; validate the declared paths. **Implemented** (`factory-invalidation`: absolute directory + filename glob per source). |
+| `plugin-state-converter` ★ ✅ | M | Enumerate converters; validate src/dst descriptors. **Implemented** (`factory-state-converter`: mandatory id/name, unique ids, non-empty plugin-id ABIs, and `create()` reports a matching descriptor). Converting a saved state into the target plugin remains a future extension. |
 
 ---
 
@@ -161,5 +161,5 @@ Each is small and independent, so they can land as separate reviewed changes.
 `params-origin`, `project-location`, `resource-directory`, `scratch-memory`, `transport-control`,
 `triggers`, `tuning`, `undo`, `webview`.
 
-**Factories not yet exercised (2):**
-`plugin-invalidation`, `plugin-state-converter`.
+**Factories not yet exercised:** none — `plugin-invalidation` and `plugin-state-converter` are now
+exercised by the `factory-invalidation` / `factory-state-converter` checks.
