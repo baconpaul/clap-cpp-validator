@@ -208,7 +208,9 @@ violates the CLAP contract (e.g. `lifecycle-negative-path` drives the state mach
 which conformant plugins are entitled to crash on. Dangerous checks are skipped by default and only
 run with `--dangerous-tests`; `list tests` marks them `(dangerous)`. They are meant for a plugin
 author probing their own robustness, not for pass/fail conformance — out-of-process isolation keeps
-a crash from taking down the run.
+a *crash* from taking down the run. (A *hang* is not currently bounded — there is no per-check
+timeout yet — so a plugin that spins forever on hostile input will block; that is a known gap worth
+closing before these run unattended.)
 
 ## The checks
 
@@ -262,6 +264,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `get-extension-contract` | unknown ids return null; repeated `get_extension` calls return the same pointer, stable across activation |
 | `param-range-robustness` | out-of-range parameter events don't crash the plugin or make `get_value` non-finite (clamping is undefined by the spec, so not required) |
 | `lifecycle-negative-path` *(dangerous)* | drives the activation state machine out of order; conformant plugins may crash, so it is opt-in via `--dangerous-tests` |
+| `malformed-events` *(dangerous)* | sends events the host should never send (unknown param id, nonexistent note port, out-of-range key/channel); conformant plugins may crash, so it is opt-in via `--dangerous-tests` |
 
 > `process-reactivation` and everything from `context-menu` down are not part of the Rust
 > validator; they are the new checks added from [validation-roadmap.md](validation-roadmap.md).

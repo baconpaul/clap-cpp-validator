@@ -286,6 +286,13 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
          "the "
          "CLAP contract, which the host is required to uphold, so conformant plugins are free to "
          "crash: this is a 'dangerous' opt-in check (see --dangerous-tests).",
+         /*dangerous=*/true},
+        {"malformed-events",
+         "Sends malformed input events (a value event for a nonexistent parameter, note events for "
+         "a nonexistent port, and notes with out-of-range key and channel) and checks that the "
+         "plugin does not crash and does not emit non-finite output. The host is responsible for "
+         "only sending well-formed events, so conformant plugins may crash: this is a 'dangerous' "
+         "opt-in check (see --dangerous-tests).",
          /*dangerous=*/true}};
 }
 
@@ -416,6 +423,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "lifecycle-negative-path")
     {
         return testLifecycleNegativePath(library, pluginId);
+    }
+    else if (testName == "malformed-events")
+    {
+        return testMalformedEvents(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -3171,6 +3182,145 @@ TestResult PluginTests::testLifecycleNegativePath(PluginLibrary &library,
             detail += (i ? "; " : "") + observations[i];
         }
         return TestResult::success(testName, description, detail);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testMalformedEvents(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "malformed-events";
+    const std::string description =
+        "Sends malformed input events (a value event for a nonexistent parameter, note events for "
+        "a "
+        "nonexistent port, and notes with out-of-range key and channel) and checks that the plugin "
+        "does not crash and does not emit non-finite output. The host is responsible for only "
+        "sending well-formed events, so conformant plugins may crash: this is a 'dangerous' opt-in "
+        "check (see --dangerous-tests).";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+        auto params = ParamsExt::create(*plugin);
+        host->handleCallbacksOnce();
+
+        // Pick a parameter id the plugin does not actually have.
+        clap_id bogusParam = 0xDEADBEEFu;
+        if (params)
+        {
+            ParamInfoMap infos = params->info();
+            while (infos.count(bogusParam) != 0)
+            {
+                ++bogusParam;
+            }
+        }
+
+        Prng prng = newPrng();
+        AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+
+        auto fill = [&](ProcessData &processData)
+        {
+            buffers.randomize(prng);
+
+            clap_event_param_value_t pv = {};
+            pv.header.size = sizeof(clap_event_param_value_t);
+            pv.header.time = 0;
+            pv.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            pv.header.type = CLAP_EVENT_PARAM_VALUE;
+            pv.param_id = bogusParam;
+            pv.cookie = nullptr;
+            pv.note_id = -1;
+            pv.port_index = -1;
+            pv.channel = -1;
+            pv.key = -1;
+            pv.value = 0.5;
+            processData.inputEvents().push(Event::fromParamValue(pv));
+
+            auto note = [&](uint16_t type, int16_t port, int16_t channel, int16_t key)
+            {
+                clap_event_note_t n = {};
+                n.header.size = sizeof(clap_event_note_t);
+                n.header.time = 0;
+                n.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                n.header.type = type;
+                n.note_id = -1;
+                n.port_index = port;
+                n.channel = channel;
+                n.key = key;
+                n.velocity = 0.8;
+                processData.inputEvents().push(Event::fromNote(n));
+            };
+            note(CLAP_EVENT_NOTE_ON, 99, 0, 60);  // nonexistent note port
+            note(CLAP_EVENT_NOTE_ON, 0, 99, 200); // out-of-range channel and key
+            note(CLAP_EVENT_NOTE_OFF, 99, 0, 60);
+            note(CLAP_EVENT_NOTE_OFF, 0, 99, 200);
+        };
+
+        auto outputNonFinite = [&]() -> bool
+        {
+            for (const auto &port : buffers.outputs())
+            {
+                for (const auto &channel : port)
+                {
+                    for (float sample : channel)
+                    {
+                        if (!std::isfinite(sample))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        };
+
+        if (!plugin->activate(44100.0, 1, BUFFER_SIZE))
+        {
+            return TestResult::failed(testName, description,
+                                      "Failed to activate the plugin for processing.");
+        }
+        bool sawNonFinite = false;
+        {
+            AudioThreadGuard guard(host);
+            plugin->startProcessing();
+            for (int iter = 0; iter < 5 && !sawNonFinite; ++iter)
+            {
+                ProcessData processData(buffers, ProcessConfig{});
+                fill(processData);
+                clap_process_t clapProcess = processData.clapProcess();
+                clap_process_status status = plugin->process(&clapProcess);
+                // A plugin that rejects the bad events with ERROR is fine; only inspect the output
+                // when it claims to have produced some.
+                if (status != CLAP_PROCESS_ERROR && outputNonFinite())
+                {
+                    sawNonFinite = true;
+                }
+            }
+            plugin->stopProcessing();
+        }
+        plugin->deactivate();
+        host->handleCallbacksOnce();
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        if (sawNonFinite)
+        {
+            return TestResult::failed(
+                testName, description,
+                "The plugin emitted non-finite output after receiving malformed events.");
+        }
+        return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
     {

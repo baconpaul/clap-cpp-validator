@@ -128,6 +128,12 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
   a **"dangerous" opt-in check**, hidden unless `--dangerous-tests` is passed, and useful mainly to
   a plugin author who *wants* to know their plugin isn't defensive against host misbehavior. (Surge
   XT and Six Sines, notably, survive it.)
+- **Malformed / hostile event resilience** ✅ — **Implemented** (`malformed-events`): sends a value
+  event for an unknown parameter id, note events for a nonexistent port, and notes with out-of-range
+  key/channel, then requires no crash and no non-finite output. Same lesson as the lifecycle
+  negative path — the host is responsible for only sending well-formed events, so careful plugins
+  (including Surge XT) crash on these — so it too is a **"dangerous" opt-in check**
+  (`--dangerous-tests`), useful for hardening rather than conformance.
 - **`get_extension` contract** ✅ (S) — **Implemented** (`get-extension-contract`): returns the
   *same* pointer on repeated calls, `null` for unknown ids, callable after `init`, and stable across
   activation.
