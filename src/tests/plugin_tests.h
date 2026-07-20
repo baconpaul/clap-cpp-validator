@@ -54,6 +54,7 @@ class PluginTests
                                                      const std::string &pluginId);
     static TestResult testProcessNoteInconsistent(PluginLibrary &library,
                                                   const std::string &pluginId);
+    static TestResult testProcessReactivation(PluginLibrary &library, const std::string &pluginId);
 
     // Parameter tests
     static TestResult testParamConversions(PluginLibrary &library, const std::string &pluginId);

@@ -70,6 +70,13 @@ void ProcessingTest::run(int numIters, const ProcessConfig &config,
                     throw std::runtime_error(
                         "The plugin returned an error during audio processing.");
                 }
+                if (status != CLAP_PROCESS_CONTINUE &&
+                    status != CLAP_PROCESS_CONTINUE_IF_NOT_QUIET && status != CLAP_PROCESS_TAIL &&
+                    status != CLAP_PROCESS_SLEEP)
+                {
+                    throw std::runtime_error("The plugin returned an unknown process status " +
+                                             std::to_string(status) + ".");
+                }
 
                 checkOutOfPlaceOutputConsistency(processData, buffers_, originalInputs);
 

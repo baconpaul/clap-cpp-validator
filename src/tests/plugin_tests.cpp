@@ -188,6 +188,10 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"process-note-inconsistent",
          "Sends intentionally inconsistent and mismatching note and MIDI events to the plugin with "
          "its default parameter values and tests the output for consistency."},
+        {"process-reactivation",
+         "Deactivates and reactivates the plugin across a spread of sample rates and block sizes "
+         "(including single-sample and large blocks with min != max frame counts), processing "
+         "random audio each time and checking the output for consistency."},
 
         // Parameter tests
         {"param-conversions",
@@ -291,6 +295,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "process-note-inconsistent")
     {
         return testProcessNoteInconsistent(library, pluginId);
+    }
+    else if (testName == "process-reactivation")
+    {
+        return testProcessReactivation(library, pluginId);
     }
     // Parameter tests
     else if (testName == "param-conversions")
@@ -610,6 +618,77 @@ TestResult PluginTests::testProcessAudioOutOfPlaceBasic(PluginLibrary &library,
         {
             return TestResult::failed(testName, description, *err);
         }
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testProcessReactivation(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "process-reactivation";
+    const std::string description =
+        "Deactivates and reactivates the plugin across a spread of sample rates and block sizes "
+        "(including single-sample and large blocks with min != max frame counts), processing "
+        "random "
+        "audio each time and checking the output for consistency.";
+
+    try
+    {
+        Prng prng = newPrng();
+
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        auto audioConfig = AudioPortConfig::query(*plugin);
+        if (!audioConfig)
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin does not implement the 'audio-ports' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        // ProcessingTest activates with min_frames=1 and max_frames=blockSize, so every block size
+        // above 1 also exercises a min != max activation range.
+        const double sampleRates[] = {22050.0, 44100.0, 48000.0, 96000.0};
+        const uint32_t blockSizes[] = {1, 17, BUFFER_SIZE, 4096};
+        for (double sampleRate : sampleRates)
+        {
+            for (uint32_t blockSize : blockSizes)
+            {
+                ProcessConfig config;
+                config.sampleRate = sampleRate;
+
+                const std::string where = "at " + std::to_string(static_cast<int>(sampleRate)) +
+                                          " Hz with a " + std::to_string(blockSize) +
+                                          "-sample block";
+                try
+                {
+                    AudioBuffers buffers(*audioConfig, blockSize);
+                    ProcessingTest processingTest(*plugin, host, buffers);
+                    processingTest.run(3, config, [&](ProcessData &) { buffers.randomize(prng); });
+                }
+                catch (const std::exception &e)
+                {
+                    return TestResult::failed(testName, description,
+                                              "Processing failed " + where + ": " + e.what());
+                }
+
+                if (auto err = host->getCallbackError())
+                {
+                    return TestResult::failed(testName, description,
+                                              "Callback error " + where + ": " + *err);
+                }
+            }
+        }
+
         return TestResult::success(testName, description);
     }
     catch (const std::exception &e)

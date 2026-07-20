@@ -104,15 +104,18 @@ Spec clarifications from the 1.2.x ChangeLog that translate directly into checks
 
 Behavioral conformance not tied to the mere presence of one extension — the highest-signal checks:
 
-- **Process return-value semantics** ★ — the `process()` return is currently ignored except for
-  `ERROR`. Validate it's a legal value, and that an effect fed silence past its `tail` eventually
-  returns `SLEEP`.
+- **Process return-value semantics** ★ ✅ (partial) — **Implemented:** every `process()` return is
+  now checked to be a legal `clap_process_status` across all processing checks (`ERROR` and unknown
+  values fail). The stronger "effect fed silence past its `tail` eventually returns `SLEEP`"
+  assertion remains a future extension.
 - **Parameter defaults** ★ ✅ (S) — **Implemented** (`param-defaults`): a freshly created plugin's
   `get_value` for each parameter must equal its declared `default_value`.
-- **Plugin lifecycle state machine** ★ (M) — `activate` twice should fail; `process` /
-  `start_processing` before `activate` should error; `deactivate` while processing; reactivate at
-  different sample rates and `min ≠ max` block sizes (including 1-sample and large blocks), varying
-  `frames_count`.
+- **Plugin lifecycle state machine** ★ ✅ (partial) — **Implemented** (`process-reactivation`):
+  reactivates across a spread of sample rates and `min ≠ max` block sizes (including 1-sample and
+  large blocks) and processes consistently each time. The negative-path assertions (`activate`
+  twice fails; `process` / `start_processing` before `activate` errors; `deactivate` while
+  processing) remain a future extension — they are best driven under out-of-process isolation since
+  a nonconformant plugin may crash.
 - **`get_extension` contract** (S) — returns the *same* pointer on repeated calls, `null` for
   unknown ids, callable after `init`.
 - **Note lifecycle** (M) — a note-output plugin should emit `CLAP_EVENT_NOTE_END` for note-ids it

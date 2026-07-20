@@ -138,7 +138,9 @@ deterministic everywhere this tool runs.
 
 `ProcessingTest` runs the standard cycle for a still-deactivated plugin: activate → start → call
 `process()` N times (invoking a `preprocess` callback before each to set events / randomize
-buffers) → stop → deactivate, honoring a mid-run `request_restart`.
+buffers) → stop → deactivate, honoring a mid-run `request_restart`. Each `process()` return value
+is checked to be a legal `clap_process_status` (`CONTINUE`/`CONTINUE_IF_NOT_QUIET`/`TAIL`/`SLEEP`;
+`ERROR` and unknown values fail).
 `checkOutOfPlaceOutputConsistency` asserts the output has no non-finite or subnormal samples, the
 inputs were not modified, and output events are in monotonically increasing time order within the
 buffer.
@@ -226,6 +228,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `process-audio-out-of-place-basic` | random audio at default params processes consistently |
 | `process-note-out-of-place-basic` | random consistent note/MIDI events process consistently |
 | `process-note-inconsistent` | intentionally inconsistent note events still process consistently |
+| `process-reactivation` | reactivating at varied sample rates and block sizes (1-sample, large, min≠max) processes consistently |
 | `param-conversions` | value↔text conversions are all-or-none and roundtrip |
 | `param-fuzz-basic` | random parameter values + audio/notes produce no NaN/Inf and no crash |
 | `param-set-wrong-namespace` | param events with a wrong namespace id are ignored |
