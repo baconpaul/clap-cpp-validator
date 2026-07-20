@@ -62,7 +62,7 @@ The plugin provides these; the host reads them and asserts invariants. Cheap, sa
 | `audio-ports-activation` / `configurable-audio-ports` / `extensible-audio-ports` | M | Exercise (de)activation & reconfiguration APIs, then re-check `audio-ports`. |
 | `param-indication` ✅ | S | Call `set_mapping`/`set_automation`; smoke-test for no crash and correct thread. **Implemented** (`param-indication` check; passes on GainPlugin). |
 | `context-menu` ✅ | M | `populate` a target; validate the returned entry structure. **Implemented** (`context-menu` check). |
-| `gui` ⏸ | M | `is_api_supported`/`get_preferred_api`; create → get_size → destroy **without showing**; `can_resize`/`adjust_size` sanity. Platform-sensitive. **Deferred** — see the tiered plan in [how-to-test-gui.plan](how-to-test-gui.plan). |
+| `gui` ✅ (Tier 0) | M | `is_api_supported`/`get_preferred_api`; create → get_size → destroy **without showing**; `can_resize`/`adjust_size` sanity. Platform-sensitive. **Tier 0 implemented** (`gui-basic`: query-only, passes on 45 installed plugins). The window-creating tiers are still deferred — see the tiered plan in [how-to-test-gui.plan](how-to-test-gui.plan). |
 | `surround` / `ambisonic` | M | Channel-mask / channel-map queries. Niche. |
 
 ### 1b. Host extensions to implement
@@ -166,39 +166,42 @@ The original high-value tranche has **all landed** (✅):
 
 1. ✅ **Host `log`** — surfaces plugins' own self-reported conformance problems (1b, S).
 2. ✅ **Trivial read-checks** — `latency`, `tail`, `voice-info`, `note-name`, `render` (1a, S).
-3. ✅ **Cheap Category 3 wins** — parameter defaults and param-info stability landed; the
-   `get_extension` contract and the negative-path lifecycle assertions remain.
+3. ✅ **Cheap Category 3 wins** — parameter defaults, param-info stability, the `get_extension`
+   contract, and the negative-path lifecycle all landed.
 4. ✅ **`state-context`** — extends the existing, well-tested state machinery (1a, M).
 
 Beyond that, the checks added since are `audio-ports-config`, `remote-controls`, `context-menu`,
-`param-indication`, `process-reactivation` (+ process return-value validation), and the two
-draft-factory checks (`factory-invalidation`, `factory-state-converter`).
+`param-indication`, `process-reactivation` (+ process return-value validation),
+`get-extension-contract`, `param-range-robustness`, `gui-basic`, the two draft-factory checks
+(`factory-invalidation`, `factory-state-converter`), and the two opt-in "dangerous" checks
+(`lifecycle-negative-path`, `malformed-events`).
 
 ### Still open (good next candidates)
 
-- **`get_extension` contract** and the **negative-path lifecycle** assertions (activate-twice,
-  process-before-activate) — the latter best driven under out-of-process isolation.
 - Host **`timer-support`** / **`posix-fd-support`** / **`thread-pool`**; **`remote-controls`** host
   `changed()`.
 - **`audio-ports-activation`** / **`configurable-audio-ports`** / **`extensible-audio-ports`**;
   **`surround`** / **`ambisonic`**.
-- Behavioral: **note lifecycle** (`NOTE_END`), **param range clamping**, **NaN/Inf input
-  resilience**, **DSP determinism**, **f64 / in-place processing**, and the ENUM
-  no-blank-`value_to_text` rule.
-- **`gui`** — see [how-to-test-gui.plan](how-to-test-gui.plan).
+- Behavioral: **note lifecycle** (`NOTE_END`), **NaN/Inf input resilience**, **DSP determinism**,
+  **f64 / in-place processing**, and the ENUM no-blank-`value_to_text` rule.
+- A **per-check timeout** so the dangerous checks can run unattended without a hanging plugin
+  blocking the run.
+- **`gui`** beyond Tier 0 (real window embed / floating) — see
+  [how-to-test-gui.plan](how-to-test-gui.plan).
 
 ---
 
 ## Appendix — extension & factory inventory
 
-**Currently exercised** (15 plugin + 5 host extensions + 4 factories):
+**Currently exercised** (16 plugin + 5 host extensions + 4 factories):
 `audio-ports`, `note-ports`, `params`, `state`, `preset-load`, `latency`, `tail`, `render`,
 `voice-info`, `note-name`, `audio-ports-config`, `remote-controls`, `context-menu`, `state-context`,
-`param-indication` (plugin) · `thread-check`, `params`, `state`, `log`, `preset-load` (host) ·
-`plugin-factory`, `preset-discovery`, `plugin-invalidation`, `plugin-state-converter` (factories).
+`param-indication`, `gui` (Tier 0, query-only) (plugin) · `thread-check`, `params`, `state`, `log`,
+`preset-load` (host) · `plugin-factory`, `preset-discovery`, `plugin-invalidation`,
+`plugin-state-converter` (factories).
 
-**Stable extensions not yet exercised (10):**
-`ambisonic`, `audio-ports-activation`, `configurable-audio-ports`, `event-registry`, `gui`,
+**Stable extensions not yet exercised (9):**
+`ambisonic`, `audio-ports-activation`, `configurable-audio-ports`, `event-registry`,
 `posix-fd-support`, `surround`, `thread-pool`, `timer-support`, `track-info`.
 
 **Draft extensions not yet exercised (18):**

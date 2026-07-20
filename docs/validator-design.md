@@ -263,6 +263,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `param-indication` | `set_mapping`/`set_automation` for every parameter (main-thread) does not crash or misbehave |
 | `get-extension-contract` | unknown ids return null; repeated `get_extension` calls return the same pointer, stable across activation |
 | `param-range-robustness` | out-of-range parameter events don't crash the plugin or make `get_value` non-finite (clamping is undefined by the spec, so not required) |
+| `gui-basic` | queries the `gui` window-API surface without creating a window: preferred API is a known, supported constant, and the platform's native API is supported |
 | `lifecycle-negative-path` *(dangerous)* | drives the activation state machine out of order; conformant plugins may crash, so it is opt-in via `--dangerous-tests` |
 | `malformed-events` *(dangerous)* | sends events the host should never send (unknown param id, nonexistent note port, out-of-range key/channel); conformant plugins may crash, so it is opt-in via `--dangerous-tests` |
 

@@ -293,7 +293,12 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
          "plugin does not crash and does not emit non-finite output. The host is responsible for "
          "only sending well-formed events, so conformant plugins may crash: this is a 'dangerous' "
          "opt-in check (see --dangerous-tests).",
-         /*dangerous=*/true}};
+         /*dangerous=*/true},
+        {"gui-basic",
+         "If the plugin implements the 'gui' extension, queries its supported window APIs and its "
+         "preferred API without ever creating a window: the preferred API must be a known constant "
+         "the plugin also reports as supported, and the plugin must support this platform's native "
+         "window API in either embedded or floating mode."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -427,6 +432,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "malformed-events")
     {
         return testMalformedEvents(library, pluginId);
+    }
+    else if (testName == "gui-basic")
+    {
+        return testGuiBasic(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -3319,6 +3328,128 @@ TestResult PluginTests::testMalformedEvents(PluginLibrary &library, const std::s
             return TestResult::failed(
                 testName, description,
                 "The plugin emitted non-finite output after receiving malformed events.");
+        }
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testGuiBasic(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "gui-basic";
+    const std::string description =
+        "If the plugin implements the 'gui' extension, queries its supported window APIs and its "
+        "preferred API without ever creating a window: the preferred API must be a known constant "
+        "the plugin also reports as supported, and the plugin must support this platform's native "
+        "window API in either embedded or floating mode.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *gui =
+            static_cast<const clap_plugin_gui_t *>(plugin->getExtension(CLAP_EXT_GUI));
+        if (!gui)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'gui' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        const clap_plugin_t *cp = plugin->clapPlugin();
+        const char *knownApis[] = {CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_COCOA,
+                                   CLAP_WINDOW_API_X11, CLAP_WINDOW_API_WAYLAND,
+                                   CLAP_WINDOW_API_UIKIT};
+
+        // Exercise the query surface for every known api in both modes (main-thread, no window is
+        // ever created). We don't assert on individual results, only that this doesn't crash.
+        if (gui->is_api_supported)
+        {
+            for (const char *api : knownApis)
+            {
+                gui->is_api_supported(cp, api, false);
+                gui->is_api_supported(cp, api, true);
+            }
+        }
+
+        // A declared preferred API must be a known constant that the plugin also reports supported.
+        if (gui->get_preferred_api)
+        {
+            const char *prefApi = nullptr;
+            bool prefFloating = false;
+            if (gui->get_preferred_api(cp, &prefApi, &prefFloating))
+            {
+                if (!prefApi)
+                {
+                    return TestResult::failed(
+                        testName, description,
+                        "'get_preferred_api' returned true but left the api pointer null.");
+                }
+                bool known = false;
+                for (const char *api : knownApis)
+                {
+                    if (std::strcmp(prefApi, api) == 0)
+                    {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known)
+                {
+                    return TestResult::failed(testName, description,
+                                              "The preferred window API '" + std::string(prefApi) +
+                                                  "' is not one of the known CLAP_WINDOW_API_* "
+                                                  "constants.");
+                }
+                if (gui->is_api_supported && !gui->is_api_supported(cp, prefApi, prefFloating))
+                {
+                    return TestResult::failed(testName, description,
+                                              "The plugin prefers the '" + std::string(prefApi) +
+                                                  "' API (" +
+                                                  (prefFloating ? "floating" : "embedded") +
+                                                  ") but reports it as unsupported.");
+                }
+            }
+        }
+
+        // The plugin must support the host platform's native window API in some mode.
+#if defined(__APPLE__)
+        const char *nativeApi = CLAP_WINDOW_API_COCOA;
+#elif defined(_WIN32)
+        const char *nativeApi = CLAP_WINDOW_API_WIN32;
+#else
+        const char *nativeApi = CLAP_WINDOW_API_X11;
+#endif
+        if (gui->is_api_supported)
+        {
+            bool supported = gui->is_api_supported(cp, nativeApi, false) ||
+                             gui->is_api_supported(cp, nativeApi, true);
+#if !defined(__APPLE__) && !defined(_WIN32)
+            // A Linux plugin may target Wayland instead of X11.
+            supported = supported || gui->is_api_supported(cp, CLAP_WINDOW_API_WAYLAND, false) ||
+                        gui->is_api_supported(cp, CLAP_WINDOW_API_WAYLAND, true);
+#endif
+            if (!supported)
+            {
+                return TestResult::failed(testName, description,
+                                          "The plugin implements 'gui' but reports no supported "
+                                          "window API for this platform (" +
+                                              std::string(nativeApi) + ").");
+            }
+        }
+
+        host->handleCallbacksOnce();
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
         }
         return TestResult::success(testName, description);
     }

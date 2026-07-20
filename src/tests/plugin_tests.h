@@ -90,6 +90,7 @@ class PluginTests
     static TestResult testLifecycleNegativePath(PluginLibrary &library,
                                                 const std::string &pluginId);
     static TestResult testMalformedEvents(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testGuiBasic(PluginLibrary &library, const std::string &pluginId);
 
   private:
     // Helper for state reproducibility tests with optional null cookies

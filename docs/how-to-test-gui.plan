@@ -47,7 +47,11 @@ Plus the host-side `clap_host_gui` callbacks a plugin may call back into: `reque
 Each tier is independently shippable and strictly more demanding on the environment than the last.
 We can stop at any tier.
 
-### Tier 0 — query only (fully headless, zero risk) ★ recommended first
+### Tier 0 — query only (fully headless, zero risk) ★ IMPLEMENTED
+
+**Done** — the `gui-basic` check. No window is ever created; it purely reads the plugin's declared
+capabilities and passes on the 45 installed plugins that ship a GUI. The remaining tiers below are
+still proposals.
 
 No window is ever created. Purely reads the plugin's declared capabilities.
 
