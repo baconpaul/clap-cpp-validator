@@ -26,7 +26,9 @@
 #include <cstring>
 #include <map>
 #include <algorithm>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 
 namespace clap_validator
 {
@@ -109,6 +111,15 @@ std::map<clap_id, double> getAllParamValues(const ParamsExt &params, const Param
 // Set by PluginTests::setFullOutput; when true, detail lists are shown in full.
 bool g_fullOutput = false;
 
+// Format a double with enough significant digits to reveal small differences (std::to_string only
+// prints six decimals, which can make two genuinely different values look identical).
+std::string formatDouble(double value, int precision = 12)
+{
+    std::ostringstream os;
+    os << std::setprecision(precision) << value;
+    return os.str();
+}
+
 // Format a list of items as a multi-line block, one per line, truncated to the first few (unless
 // full output is requested) followed by a count of the rest. Meant to follow a trailing ':'.
 std::string formatTruncatedList(const std::vector<std::string> &items)
@@ -144,7 +155,8 @@ std::string formatMismatchingValues(const std::map<clap_id, double> &actual,
         }
         std::string name = infos.count(id) ? infos.at(id).name : std::string();
         items.push_back("parameter " + std::to_string(id) + " ('" + name + "'): expected " +
-                        std::to_string(expectedValue) + ", actual " + std::to_string(actualValue));
+                        formatDouble(expectedValue) + ", actual " + formatDouble(actualValue) +
+                        " (diff " + formatDouble(actualValue - expectedValue, 6) + ")");
     }
     return formatTruncatedList(items);
 }
