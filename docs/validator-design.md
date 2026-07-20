@@ -82,7 +82,9 @@ that string is the stable identity across the two implementations.
 
 - **`PluginLibrary`** loads the `.clap` (a shared library / bundle), resolves the `clap_entry`
   point, exposes the plugin factory, and reads per-plugin metadata (id, name, features, …).
-- **`Host`** implements `clap_host` and the `thread-check`, `params`, and `state` host extensions.
+- **`Host`** implements `clap_host` and the `thread-check`, `params`, `state`, and `log` host
+  extensions. The `log` sink prints `WARNING`+ messages (subject to `--show-plugin-stdout`) and turns
+  `PLUGIN_MISBEHAVING`/`HOST_MISBEHAVING` messages into findings via the callback-error path.
   It records the main-thread id and, via `AudioThreadGuard` (an RAII marker), the audio-thread id,
   so host callbacks made from the wrong thread are recorded as callback errors. `handleCallbacksOnce()`
   drains a pending `request_callback` by invoking the plugin's `on_main_thread`, and a pending

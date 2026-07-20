@@ -86,6 +86,10 @@ class Host : public std::enable_shared_from_this<Host>
     // State extension
     static void CLAP_ABI stateMarkDirty(const clap_host_t *host);
 
+    // Log extension
+    static void CLAP_ABI logMessage(const clap_host_t *host, clap_log_severity severity,
+                                    const char *msg);
+
     // Helper to get Host from clap_host pointer
     static Host *fromClapHost(const clap_host_t *host);
 
@@ -98,12 +102,14 @@ class Host : public std::enable_shared_from_this<Host>
     clap_host_thread_check_t threadCheckExt_;
     clap_host_params_t paramsExt_;
     clap_host_state_t stateExt_;
+    clap_host_log_t logExt_;
 
     std::thread::id mainThreadId_;
     std::atomic<std::thread::id> audioThreadId_;
 
     mutable std::mutex errorMutex_;
     std::optional<std::string> callbackError_;
+    std::mutex logMutex_;
 
     Plugin *currentPlugin_ = nullptr;
 

@@ -65,7 +65,7 @@ under-exercises them and can hide misbehavior.
 
 | Host extension | Effort | Why |
 |---|---|---|
-| `log` ★★ | S | Surface `CLAP_LOG_WARNING/ERROR/FATAL` and especially `*_MISBEHAVING` messages as findings — plugins report their own conformance problems here. |
+| `log` ★★ ✅ | S | Surface `CLAP_LOG_WARNING/ERROR/FATAL` and especially `*_MISBEHAVING` messages as findings — plugins report their own conformance problems here. **Implemented:** the host prints `WARNING`+ and treats `*_MISBEHAVING` as findings. |
 | `preset-load` (host side) ★ | S | Implement `on_error`/`loaded`; the current `preset-discovery-load` check misses `on_error` callbacks entirely. |
 | `timer-support` / `posix-fd-support` | S | Plugins commonly register these in `init()`; implementing them avoids null-host-ext paths. |
 | `thread-pool` | M | Implement `request_exec` so plugins that fan out work actually run and are validated. |

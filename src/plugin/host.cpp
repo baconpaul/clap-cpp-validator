@@ -15,6 +15,7 @@
 #include "host.h"
 #include "instance.h"
 #include <cstring>
+#include <iostream>
 
 namespace clap_validator
 {
@@ -44,6 +45,9 @@ Host::Host() : mainThreadId_(std::this_thread::get_id())
 
     // Initialize state extension
     stateExt_.mark_dirty = &Host::stateMarkDirty;
+
+    // Initialize log extension
+    logExt_.log = &Host::logMessage;
 }
 
 Host::~Host() = default;
@@ -162,6 +166,10 @@ const void *CLAP_ABI Host::getExtension(const clap_host_t *host, const char *ext
     {
         return &self->stateExt_;
     }
+    if (strcmp(extensionId, CLAP_EXT_LOG) == 0)
+    {
+        return &self->logExt_;
+    }
 
     return nullptr;
 }
@@ -243,6 +251,61 @@ void CLAP_ABI Host::stateMarkDirty(const clap_host_t *host)
     if (self)
     {
         self->assertMainThread("clap_host_state::mark_dirty()");
+    }
+}
+
+void CLAP_ABI Host::logMessage(const clap_host_t *host, clap_log_severity severity, const char *msg)
+{
+    Host *self = fromClapHost(host);
+    if (!self)
+    {
+        return;
+    }
+
+    const char *level = "UNKNOWN";
+    switch (severity)
+    {
+    case CLAP_LOG_DEBUG:
+        level = "DEBUG";
+        break;
+    case CLAP_LOG_INFO:
+        level = "INFO";
+        break;
+    case CLAP_LOG_WARNING:
+        level = "WARNING";
+        break;
+    case CLAP_LOG_ERROR:
+        level = "ERROR";
+        break;
+    case CLAP_LOG_FATAL:
+        level = "FATAL";
+        break;
+    case CLAP_LOG_HOST_MISBEHAVING:
+        level = "HOST_MISBEHAVING";
+        break;
+    case CLAP_LOG_PLUGIN_MISBEHAVING:
+        level = "PLUGIN_MISBEHAVING";
+        break;
+    default:
+        break;
+    }
+
+    const std::string message = msg ? msg : "<null>";
+
+    // Print WARNING and above so the plugin's log surfaces (subject to --show-plugin-stdout). This
+    // callback is [thread-safe] and may run on the audio thread; a validator can afford stderr.
+    if (severity >= CLAP_LOG_WARNING)
+    {
+        std::lock_guard<std::mutex> lock(self->logMutex_);
+        std::cerr << "[clap-log:" << level << "] " << message << "\n";
+    }
+
+    // The misbehaving severities are CLAP's explicit conformance-violation channel; surface them as
+    // findings through the callback-error path the checks already inspect.
+    if (severity == CLAP_LOG_PLUGIN_MISBEHAVING || severity == CLAP_LOG_HOST_MISBEHAVING)
+    {
+        self->setCallbackError(std::string("The plugin logged a ") + level +
+                               " message via clap_host_log: " + message);
     }
 }
 
