@@ -84,7 +84,8 @@ that string is the stable identity across the two implementations.
   point, exposes the plugin factory, and reads per-plugin metadata (id, name, features, …).
 - **`Host`** implements `clap_host` and the `thread-check`, `params`, `state`, and `log` host
   extensions. The `log` sink prints `WARNING`+ messages (subject to `--show-plugin-stdout`) and turns
-  `PLUGIN_MISBEHAVING`/`HOST_MISBEHAVING` messages into findings via the callback-error path.
+  `PLUGIN_MISBEHAVING` messages into findings via the callback-error path. `HOST_MISBEHAVING` is
+  printed but not treated as a plugin failure, since it indicts the host rather than the plugin.
   It records the main-thread id and, via `AudioThreadGuard` (an RAII marker), the audio-thread id,
   so host callbacks made from the wrong thread are recorded as callback errors. `handleCallbacksOnce()`
   drains a pending `request_callback` by invoking the plugin's `on_main_thread`, and a pending
@@ -228,6 +229,11 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `state-reproducibility-flush` | same, using `params.flush()` for the second instance |
 | `state-buffered-streams` | reproducibility with small chunked state reads/writes |
 | `context-menu` | the plugin's global and per-parameter `context-menu` items are well-formed (non-null labels/titles, balanced submenus, known kinds) |
+| `latency` | `latency.get()` is readable while active and stable across reads |
+| `tail` | `tail.get()` is readable (while active) and stable |
+| `voice-info` | reports `1 ≤ voice_count ≤ voice_capacity` while active |
+| `note-name` | every declared note name queries successfully with valid key/channel/port ranges |
+| `render` | realtime mode is accepted; a hard-realtime plugin rejects offline mode |
 
-> `context-menu` is not part of the Rust validator; it is the first of the new-extension checks
-> from [validation-roadmap.md](validation-roadmap.md).
+> `context-menu` and the five extension read-checks below it are not part of the Rust validator;
+> they are the new-extension checks from [validation-roadmap.md](validation-roadmap.md).

@@ -226,7 +226,23 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"context-menu",
          "If the plugin implements the 'context-menu' extension, populates its global and "
          "per-parameter context menus and checks that every menu item is well-formed: non-null "
-         "labels and titles, balanced submenus, and known item kinds."}};
+         "labels and titles, balanced submenus, and known item kinds."},
+        {"latency",
+         "If the plugin implements the 'latency' extension, checks that its reported latency is "
+         "readable while the plugin is active and stable across reads."},
+        {"tail",
+         "If the plugin implements the 'tail' extension, checks that its reported tail length is "
+         "readable and stable."},
+        {"voice-info",
+         "If the plugin implements the 'voice-info' extension, checks that it reports "
+         "1 <= voice_count <= voice_capacity while the plugin is active."},
+        {"note-name",
+         "If the plugin implements the 'note-name' extension, checks that every declared note name "
+         "can be queried and has valid key, channel, and port ranges."},
+        {"render",
+         "If the plugin implements the 'render' extension, checks the render mode setters: the "
+         "realtime mode is accepted and a plugin with a hard "
+         "realtime requirement rejects the offline mode."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -296,6 +312,26 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "context-menu")
     {
         return testContextMenu(library, pluginId);
+    }
+    else if (testName == "latency")
+    {
+        return testLatency(library, pluginId);
+    }
+    else if (testName == "tail")
+    {
+        return testTail(library, pluginId);
+    }
+    else if (testName == "voice-info")
+    {
+        return testVoiceInfo(library, pluginId);
+    }
+    else if (testName == "note-name")
+    {
+        return testNoteName(library, pluginId);
+    }
+    else if (testName == "render")
+    {
+        return testRender(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -1672,6 +1708,308 @@ TestResult PluginTests::testContextMenu(PluginLibrary &library, const std::strin
         }
 
         host->handleCallbacksOnce();
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testLatency(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "latency";
+    const std::string description =
+        "If the plugin implements the 'latency' extension, checks that its reported latency is "
+        "readable while the plugin is active and stable across reads.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *latency =
+            static_cast<const clap_plugin_latency_t *>(plugin->getExtension(CLAP_EXT_LATENCY));
+        if (!latency || !latency->get)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'latency' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        // 'latency.get()' may only be called while the plugin is active.
+        if (!plugin->activate(44100.0, 1, BUFFER_SIZE))
+        {
+            return TestResult::failed(testName, description, "Failed to activate plugin");
+        }
+        uint32_t first = latency->get(plugin->clapPlugin());
+        uint32_t second = latency->get(plugin->clapPlugin());
+        plugin->deactivate();
+
+        if (first != second)
+        {
+            return TestResult::failed(testName, description,
+                                      "'latency.get()' returned " + std::to_string(first) +
+                                          " then " + std::to_string(second) +
+                                          " within one activation; latency must be stable while "
+                                          "active and only change during activation.");
+        }
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description,
+                                   "Reported latency: " + std::to_string(first) + " samples");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testTail(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "tail";
+    const std::string description =
+        "If the plugin implements the 'tail' extension, checks that its reported tail length is "
+        "readable and stable.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *tail =
+            static_cast<const clap_plugin_tail_t *>(plugin->getExtension(CLAP_EXT_TAIL));
+        if (!tail || !tail->get)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'tail' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        // Tail is reported in samples, which depends on the sample rate, so query it while the
+        // plugin is active (and knows the rate).
+        if (!plugin->activate(44100.0, 1, BUFFER_SIZE))
+        {
+            return TestResult::failed(testName, description, "Failed to activate plugin");
+        }
+        uint32_t first = tail->get(plugin->clapPlugin());
+        uint32_t second = tail->get(plugin->clapPlugin());
+        plugin->deactivate();
+        if (first != second)
+        {
+            return TestResult::failed(testName, description,
+                                      "'tail.get()' returned " + std::to_string(first) + " then " +
+                                          std::to_string(second) +
+                                          " on consecutive reads; the tail should be stable.");
+        }
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        std::string reported = first >= static_cast<uint32_t>(INT32_MAX)
+                                   ? "infinite"
+                                   : std::to_string(first) + " samples";
+        return TestResult::success(testName, description, "Reported tail: " + reported);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testVoiceInfo(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "voice-info";
+    const std::string description =
+        "If the plugin implements the 'voice-info' extension, checks that it reports "
+        "1 <= voice_count <= voice_capacity while the plugin is active.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *voiceInfo = static_cast<const clap_plugin_voice_info_t *>(
+            plugin->getExtension(CLAP_EXT_VOICE_INFO));
+        if (!voiceInfo || !voiceInfo->get)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'voice-info' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        // 'voice_info.get()' may only be called while the plugin is active.
+        if (!plugin->activate(44100.0, 1, BUFFER_SIZE))
+        {
+            return TestResult::failed(testName, description, "Failed to activate plugin");
+        }
+        clap_voice_info_t info = {};
+        bool ok = voiceInfo->get(plugin->clapPlugin(), &info);
+        plugin->deactivate();
+
+        if (!ok)
+        {
+            return TestResult::failed(testName, description,
+                                      "'voice_info.get()' returned false while the plugin was "
+                                      "active.");
+        }
+        if (info.voice_count < 1 || info.voice_count > info.voice_capacity)
+        {
+            return TestResult::failed(
+                testName, description,
+                "The plugin reported voice_count=" + std::to_string(info.voice_count) +
+                    " and voice_capacity=" + std::to_string(info.voice_capacity) +
+                    "; the spec requires 1 <= voice_count <= voice_capacity.");
+        }
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description,
+                                   "voice_count=" + std::to_string(info.voice_count) +
+                                       ", voice_capacity=" + std::to_string(info.voice_capacity));
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testNoteName(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "note-name";
+    const std::string description =
+        "If the plugin implements the 'note-name' extension, checks that every declared note name "
+        "can be queried and has valid key, channel, and port ranges.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *noteName =
+            static_cast<const clap_plugin_note_name_t *>(plugin->getExtension(CLAP_EXT_NOTE_NAME));
+        if (!noteName || !noteName->count || !noteName->get)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'note-name' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        uint32_t count = noteName->count(plugin->clapPlugin());
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            clap_note_name_t name = {};
+            if (!noteName->get(plugin->clapPlugin(), i, &name))
+            {
+                return TestResult::failed(testName, description,
+                                          "'note_name.get(" + std::to_string(i) +
+                                              ")' returned false (" + std::to_string(count) +
+                                              " note names were reported).");
+            }
+            if (name.key < -1 || name.key > 127)
+            {
+                return TestResult::failed(testName, description,
+                                          "Note name " + std::to_string(i) + " has key " +
+                                              std::to_string(name.key) +
+                                              " (must be -1 for every key, or 0..127).");
+            }
+            if (name.channel < -1 || name.channel > 15)
+            {
+                return TestResult::failed(testName, description,
+                                          "Note name " + std::to_string(i) + " has channel " +
+                                              std::to_string(name.channel) +
+                                              " (must be -1 for every channel, or 0..15).");
+            }
+            if (name.port < -1)
+            {
+                return TestResult::failed(
+                    testName, description,
+                    "Note name " + std::to_string(i) + " has port " + std::to_string(name.port) +
+                        " (must be -1 for every port, or a valid port index).");
+            }
+        }
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description, std::to_string(count) + " note name(s)");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testRender(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "render";
+    const std::string description =
+        "If the plugin implements the 'render' extension, checks the render mode setters: the "
+        "realtime mode is accepted and a plugin with a hard realtime "
+        "requirement rejects the offline mode.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *render =
+            static_cast<const clap_plugin_render_t *>(plugin->getExtension(CLAP_EXT_RENDER));
+        if (!render || !render->set || !render->has_hard_realtime_requirement)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'render' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        const clap_plugin_t *cp = plugin->clapPlugin();
+        bool hardRealtime = render->has_hard_realtime_requirement(cp);
+
+        if (!render->set(cp, CLAP_RENDER_REALTIME))
+        {
+            return TestResult::failed(testName, description,
+                                      "'render.set(CLAP_RENDER_REALTIME)' returned false; the "
+                                      "default realtime mode should always be applicable.");
+        }
+
+        bool offlineApplied = render->set(cp, CLAP_RENDER_OFFLINE);
+        if (hardRealtime && offlineApplied)
+        {
+            return TestResult::failed(testName, description,
+                                      "The plugin reports a hard realtime requirement but accepted "
+                                      "the offline render mode.");
+        }
+
+        // Leave the plugin back in the default realtime mode.
+        render->set(cp, CLAP_RENDER_REALTIME);
+
         if (auto err = host->getCallbackError())
         {
             return TestResult::failed(testName, description, *err);

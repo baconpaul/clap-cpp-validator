@@ -43,11 +43,11 @@ The plugin provides these; the host reads them and asserts invariants. Cheap, sa
 
 | Extension | Effort | What a check verifies |
 |---|---|---|
-| `latency` ★ | S | `get()` returns a sample count; stable across process calls; only changes after a requested restart. |
-| `tail` | S | `get()` is `≥ 0` or `CLAP_TAIL_INFINITE`. |
-| `render` | S | `set()` accepts `REALTIME`/`OFFLINE`, rejects garbage; `has_hard_realtime_requirement` coherent. |
-| `voice-info` | S | `voice_count ≤ voice_capacity`, both `> 0`; flags sane. |
-| `note-name` | S | Enumerate; validate key (`-1`/`0..127`), channel, and port ranges. |
+| `latency` ★ ✅ | S | `get()` readable while active and stable across reads. **Implemented.** |
+| `tail` ✅ | S | `get()` (while active) readable and stable. **Implemented.** |
+| `render` ✅ | S | `set(REALTIME)` accepted; a hard-realtime plugin rejects `OFFLINE`. **Implemented.** |
+| `voice-info` ✅ | S | `1 ≤ voice_count ≤ voice_capacity` while active. **Implemented.** |
+| `note-name` ✅ | S | Enumerate; validate key (`-1`/`0..127`), channel, and port ranges. **Implemented.** |
 | `audio-ports-config` ★ | M | Enumerate configs (unique ids); `select` each; confirm `audio-ports` then reflects the selected layout. |
 | `remote-controls` ★ | M | Enumerate pages; every `param_id` exists in `params`; unique page ids; correct slot count. |
 | `state-context` ★ | M | Reproducibility per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE`; agrees with plain `state`. |

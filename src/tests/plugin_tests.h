@@ -73,6 +73,11 @@ class PluginTests
 
     // Other extension tests (not present in the Rust validator)
     static TestResult testContextMenu(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testLatency(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testTail(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testVoiceInfo(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testNoteName(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testRender(PluginLibrary &library, const std::string &pluginId);
 
   private:
     // Helper for state reproducibility tests with optional null cookies

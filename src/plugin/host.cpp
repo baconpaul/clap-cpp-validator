@@ -300,9 +300,11 @@ void CLAP_ABI Host::logMessage(const clap_host_t *host, clap_log_severity severi
         std::cerr << "[clap-log:" << level << "] " << message << "\n";
     }
 
-    // The misbehaving severities are CLAP's explicit conformance-violation channel; surface them as
-    // findings through the callback-error path the checks already inspect.
-    if (severity == CLAP_LOG_PLUGIN_MISBEHAVING || severity == CLAP_LOG_HOST_MISBEHAVING)
+    // PLUGIN_MISBEHAVING is the plugin (or a layer) self-reporting the plugin's own fault, so we
+    // surface it as a finding via the callback-error path the checks already inspect.
+    // HOST_MISBEHAVING points at the host (us) - it is printed above but not treated as a plugin
+    // failure, since it usually means the validator host should change rather than the plugin.
+    if (severity == CLAP_LOG_PLUGIN_MISBEHAVING)
     {
         self->setCallbackError(std::string("The plugin logged a ") + level +
                                " message via clap_host_log: " + message);
