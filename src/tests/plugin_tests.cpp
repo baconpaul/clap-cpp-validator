@@ -253,7 +253,10 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
          "If the plugin implements the 'audio-ports-config' extension, enumerates its port "
          "configurations, selects each one, and checks that the plugin's audio ports then match "
          "the "
-         "selected configuration."}};
+         "selected configuration."},
+        {"remote-controls",
+         "If the plugin implements the 'remote-controls' extension, checks that every page can be "
+         "queried and that each parameter it references actually exists."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -355,6 +358,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "audio-ports-config")
     {
         return testAudioPortsConfig(library, pluginId);
+    }
+    else if (testName == "remote-controls")
+    {
+        return testRemoteControls(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2295,6 +2302,89 @@ TestResult PluginTests::testAudioPortsConfig(PluginLibrary &library, const std::
         }
         return TestResult::success(testName, description,
                                    std::to_string(count) + " audio port configuration(s)");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testRemoteControls(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "remote-controls";
+    const std::string description =
+        "If the plugin implements the 'remote-controls' extension, checks that every page can be "
+        "queried and that each parameter it references actually exists.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *remote = static_cast<const clap_plugin_remote_controls_t *>(
+            plugin->getExtension(CLAP_EXT_REMOTE_CONTROLS));
+        if (!remote)
+        {
+            remote = static_cast<const clap_plugin_remote_controls_t *>(
+                plugin->getExtension(CLAP_EXT_REMOTE_CONTROLS_COMPAT));
+        }
+        if (!remote || !remote->count || !remote->get)
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin does not implement the 'remote-controls' extension.");
+        }
+
+        auto params = ParamsExt::create(*plugin);
+        host->handleCallbacksOnce();
+
+        std::set<clap_id> validParamIds;
+        if (params)
+        {
+            for (const auto &entry : params->info())
+            {
+                validParamIds.insert(entry.first);
+            }
+        }
+
+        const clap_plugin_t *cp = plugin->clapPlugin();
+        uint32_t count = remote->count(cp);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            clap_remote_controls_page_t page = {};
+            if (!remote->get(cp, i, &page))
+            {
+                return TestResult::failed(testName, description,
+                                          "'remote_controls.get(" + std::to_string(i) +
+                                              ")' returned false (" + std::to_string(count) +
+                                              " pages reported).");
+            }
+            std::string pageName(page.page_name, ::strnlen(page.page_name, sizeof(page.page_name)));
+            for (uint32_t slot = 0; slot < CLAP_REMOTE_CONTROLS_COUNT; ++slot)
+            {
+                clap_id paramId = page.param_ids[slot];
+                if (paramId != CLAP_INVALID_ID &&
+                    validParamIds.find(paramId) == validParamIds.end())
+                {
+                    return TestResult::failed(
+                        testName, description,
+                        "Remote controls page " + std::to_string(i) + " ('" + pageName +
+                            "') slot " + std::to_string(slot) + " references parameter id " +
+                            std::to_string(paramId) + ", which the plugin does not expose.");
+                }
+            }
+        }
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description,
+                                   std::to_string(count) + " remote control page(s)");
     }
     catch (const std::exception &e)
     {

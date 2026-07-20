@@ -241,6 +241,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `param-defaults` | a freshly created plugin's parameter values equal their declared `default_value` |
 | `param-info-stable` | parameter info (ids, cookies, ranges, flags) is identical across repeated queries |
 | `audio-ports-config` | each advertised `audio-ports-config` selects, and the audio ports then match it |
+| `remote-controls` | every `remote-controls` page queries, and each referenced parameter id exists |
 
 > `context-menu` and the five extension read-checks below it are not part of the Rust validator;
 > they are the new-extension checks from [validation-roadmap.md](validation-roadmap.md).
