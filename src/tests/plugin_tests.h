@@ -78,6 +78,8 @@ class PluginTests
     static TestResult testVoiceInfo(PluginLibrary &library, const std::string &pluginId);
     static TestResult testNoteName(PluginLibrary &library, const std::string &pluginId);
     static TestResult testRender(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testParamDefaults(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testParamInfoStable(PluginLibrary &library, const std::string &pluginId);
 
   private:
     // Helper for state reproducibility tests with optional null cookies

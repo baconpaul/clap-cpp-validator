@@ -238,6 +238,8 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `voice-info` | reports `1 ≤ voice_count ≤ voice_capacity` while active |
 | `note-name` | every declared note name queries successfully with valid key/channel/port ranges |
 | `render` | realtime mode is accepted; a hard-realtime plugin rejects offline mode |
+| `param-defaults` | a freshly created plugin's parameter values equal their declared `default_value` |
+| `param-info-stable` | parameter info (ids, cookies, ranges, flags) is identical across repeated queries |
 
 > `context-menu` and the five extension read-checks below it are not part of the Rust validator;
 > they are the new-extension checks from [validation-roadmap.md](validation-roadmap.md).

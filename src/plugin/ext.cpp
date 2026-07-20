@@ -234,6 +234,14 @@ ParamInfoMap ParamsExt::info() const
             }
         }
 
+        // CLAP_PARAM_IS_ENUM requires CLAP_PARAM_IS_STEPPED (params.h).
+        if ((info.flags & CLAP_PARAM_IS_ENUM) != 0 && (info.flags & CLAP_PARAM_IS_STEPPED) == 0)
+        {
+            fail("Parameter '" + name +
+                 "' is an enum parameter but is not stepped; "
+                 "CLAP_PARAM_IS_ENUM requires CLAP_PARAM_IS_STEPPED.");
+        }
+
         constexpr clap_param_info_flags perAutomate =
             CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE_ID | CLAP_PARAM_IS_AUTOMATABLE_PER_KEY |
             CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL | CLAP_PARAM_IS_AUTOMATABLE_PER_PORT;

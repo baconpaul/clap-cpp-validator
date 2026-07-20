@@ -242,7 +242,13 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"render",
          "If the plugin implements the 'render' extension, checks the render mode setters: the "
          "realtime mode is accepted and a plugin with a hard "
-         "realtime requirement rejects the offline mode."}};
+         "realtime requirement rejects the offline mode."},
+        {"param-defaults",
+         "Checks that a freshly created plugin reports each parameter's declared default value "
+         "before any state is loaded."},
+        {"param-info-stable", "Checks that the plugin's parameter information (ids, cookies, "
+                              "ranges, flags) is identical "
+                              "across repeated queries."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -332,6 +338,14 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "render")
     {
         return testRender(library, pluginId);
+    }
+    else if (testName == "param-defaults")
+    {
+        return testParamDefaults(library, pluginId);
+    }
+    else if (testName == "param-info-stable")
+    {
+        return testParamInfoStable(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2015,6 +2029,133 @@ TestResult PluginTests::testRender(PluginLibrary &library, const std::string &pl
             return TestResult::failed(testName, description, *err);
         }
         return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testParamDefaults(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "param-defaults";
+    const std::string description =
+        "Checks that a freshly created plugin reports each parameter's declared default value "
+        "before any state is loaded.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'params' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        ParamInfoMap paramInfos = params->info();
+        std::vector<std::string> mismatches;
+        for (const auto &[id, info] : paramInfos)
+        {
+            double value = params->getValue(id);
+            if (value != info.defaultValue)
+            {
+                mismatches.push_back("parameter '" + info.name + "': default " +
+                                     formatDouble(info.defaultValue) + ", actual " +
+                                     formatDouble(value) + " (diff " +
+                                     formatDouble(value - info.defaultValue, 6) + ")");
+            }
+        }
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        if (!mismatches.empty())
+        {
+            return TestResult::failed(testName, description,
+                                      "A freshly created plugin's parameter values do not match "
+                                      "their declared defaults:" +
+                                          formatTruncatedList(mismatches));
+        }
+        return TestResult::success(testName, description,
+                                   std::to_string(paramInfos.size()) +
+                                       " parameter(s) at their declared defaults");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testParamInfoStable(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "param-info-stable";
+    const std::string description =
+        "Checks that the plugin's parameter information (ids, cookies, ranges, flags) is identical "
+        "across repeated queries.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'params' extension.");
+        }
+        host->handleCallbacksOnce();
+
+        ParamInfoMap first = params->info();
+        ParamInfoMap second = params->info();
+        if (first.size() != second.size())
+        {
+            return TestResult::failed(
+                testName, description,
+                "The parameter count changed between two queries: " + std::to_string(first.size()) +
+                    " then " + std::to_string(second.size()) + ".");
+        }
+        for (const auto &[id, a] : first)
+        {
+            auto it = second.find(id);
+            if (it == second.end())
+            {
+                return TestResult::failed(testName, description,
+                                          "Parameter id " + std::to_string(id) +
+                                              " was present in the first query but missing in the "
+                                              "second.");
+            }
+            const ParamInfo &b = it->second;
+            if (a.name != b.name || a.cookie != b.cookie || a.minValue != b.minValue ||
+                a.maxValue != b.maxValue || a.defaultValue != b.defaultValue || a.flags != b.flags)
+            {
+                return TestResult::failed(
+                    testName, description,
+                    "Parameter '" + a.name + "' (id " + std::to_string(id) +
+                        ") reported different info across two queries; "
+                        "parameter info (especially cookies) must be stable.");
+            }
+        }
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description,
+                                   std::to_string(first.size()) + " parameter(s) with stable info");
     }
     catch (const std::exception &e)
     {

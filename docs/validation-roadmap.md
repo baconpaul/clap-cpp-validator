@@ -86,9 +86,10 @@ Spec clarifications from the 1.2.x ChangeLog that translate directly into checks
 
 - **`latency` requirements changed (1.2.2)** — latency must be queried after activation, must be
   constant while active, and any change requires deactivate + `request_restart`. New concrete check.
-- **`params` flag clarifications** — `CLAP_PARAM_IS_BYPASS` clarified (1.2.10); the flag set now
-  includes **`CLAP_PARAM_IS_ENUM`** and **`CLAP_PARAM_IS_PERIODIC`**, which the param-info validation
-  does not check. Assert `ENUM ⇒ STEPPED` with an integer range; validate bypass semantics.
+- **`params` flag clarifications** ✅ — `CLAP_PARAM_IS_BYPASS` clarified (1.2.10); the flag set now
+  includes **`CLAP_PARAM_IS_ENUM`** and **`CLAP_PARAM_IS_PERIODIC`**. **Implemented:** param-info
+  validation now enforces `ENUM ⇒ STEPPED`. (The `ENUM` "no blank value_to_text over the range"
+  rule is still to do.)
 - **`thread-check` realtime docs expanded (1.2.2 / 1.2.4)** — extend which host callbacks we assert
   are main-thread vs audio-thread.
 - **`events.h` sysex lifetime clarified (1.2.3)** — relevant when the note fuzzer emits sysex.
@@ -106,8 +107,8 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
 - **Process return-value semantics** ★ — the `process()` return is currently ignored except for
   `ERROR`. Validate it's a legal value, and that an effect fed silence past its `tail` eventually
   returns `SLEEP`.
-- **Parameter defaults** ★ (S) — a freshly created plugin's `get_value` for each parameter should
-  equal its declared `default_value` before any state load.
+- **Parameter defaults** ★ ✅ (S) — **Implemented** (`param-defaults`): a freshly created plugin's
+  `get_value` for each parameter must equal its declared `default_value`.
 - **Plugin lifecycle state machine** ★ (M) — `activate` twice should fail; `process` /
   `start_processing` before `activate` should error; `deactivate` while processing; reactivate at
   different sample rates and `min ≠ max` block sizes (including 1-sample and large blocks), varying
@@ -124,8 +125,8 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
   output. Opt-in, since some plugins are legitimately stochastic.
 - **f64 & in-place processing** (M) — only out-of-place f32 is tested today; exercise `data64` when
   advertised and the in-place-pair audio-port info that is currently ignored.
-- **Cookie / flush stability** (S) — `get_info` cookies are stable across calls; flushing the same
-  events twice yields the same values.
+- **Cookie / flush stability** ✅ (S) — **Implemented** (`param-info-stable`): `get_info` ids,
+  cookies, ranges, and flags are stable across repeated queries.
 
 ---
 
