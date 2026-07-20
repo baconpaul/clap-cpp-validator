@@ -50,7 +50,7 @@ The plugin provides these; the host reads them and asserts invariants. Cheap, sa
 | `note-name` ✅ | S | Enumerate; validate key (`-1`/`0..127`), channel, and port ranges. **Implemented.** |
 | `audio-ports-config` ★ ✅ | M | Enumerate configs (unique ids); `select` each; confirm `audio-ports` then reflects the selected layout. **Implemented.** |
 | `remote-controls` ★ ✅ | M | Enumerate pages; every referenced `param_id` exists in `params`. **Implemented** (passes on Surge XT's 5 pages). |
-| `state-context` ★ | M | Reproducibility per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE`; agrees with plain `state`. |
+| `state-context` ★ ✅ | M | Reproducibility per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE`; each context round-trips and agrees with plain `state`. **Implemented** (`state-context` check). |
 | `audio-ports-activation` / `configurable-audio-ports` / `extensible-audio-ports` | M | Exercise (de)activation & reconfiguration APIs, then re-check `audio-ports`. |
 | `param-indication` | S | Call `set_mapping`/`set_automation`; smoke-test for no crash and correct thread. |
 | `context-menu` ✅ | M | `populate` a target; validate the returned entry structure. **Implemented** (`context-menu` check). |

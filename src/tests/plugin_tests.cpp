@@ -256,7 +256,11 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
          "selected configuration."},
         {"remote-controls",
          "If the plugin implements the 'remote-controls' extension, checks that every page can be "
-         "queried and that each parameter it references actually exists."}};
+         "queried and that each parameter it references actually exists."},
+        {"state-context",
+         "If the plugin implements the 'state-context' extension, checks that saving and reloading "
+         "the state reproduces the parameter values and a byte-identical state for each context "
+         "type (preset, duplicate, project)."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -362,6 +366,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "remote-controls")
     {
         return testRemoteControls(library, pluginId);
+    }
+    else if (testName == "state-context")
+    {
+        return testStateContext(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2385,6 +2393,210 @@ TestResult PluginTests::testRemoteControls(PluginLibrary &library, const std::st
         }
         return TestResult::success(testName, description,
                                    std::to_string(count) + " remote control page(s)");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+namespace
+{
+// Save the plugin's state for a given state-context type into a byte vector. Throws on failure.
+std::vector<uint8_t> saveStateContext(const clap_plugin_state_context_t *state,
+                                      const clap_plugin_t *plugin, uint32_t contextType)
+{
+    struct Writer
+    {
+        std::vector<uint8_t> data;
+    } writer;
+
+    clap_ostream_t stream = {};
+    stream.ctx = &writer;
+    stream.write = [](const clap_ostream_t *s, const void *buffer, uint64_t size) -> int64_t
+    {
+        auto *self = static_cast<Writer *>(s->ctx);
+        const uint8_t *bytes = static_cast<const uint8_t *>(buffer);
+        self->data.insert(self->data.end(), bytes, bytes + size);
+        return static_cast<int64_t>(size);
+    };
+
+    if (!state->save(plugin, &stream, contextType))
+    {
+        throw std::runtime_error("'clap_plugin_state_context::save()' returned false.");
+    }
+    return writer.data;
+}
+
+// Load state for a given context type from a byte vector. Returns the plugin's load() result.
+bool loadStateContext(const clap_plugin_state_context_t *state, const clap_plugin_t *plugin,
+                      const std::vector<uint8_t> &data, uint32_t contextType)
+{
+    struct Reader
+    {
+        const std::vector<uint8_t> *data;
+        size_t pos;
+    } reader{&data, 0};
+
+    clap_istream_t stream = {};
+    stream.ctx = &reader;
+    stream.read = [](const clap_istream_t *s, void *buffer, uint64_t size) -> int64_t
+    {
+        auto *self = static_cast<Reader *>(s->ctx);
+        size_t available = self->data->size() - self->pos;
+        uint64_t n = std::min<uint64_t>(size, static_cast<uint64_t>(available));
+        if (n > 0)
+        {
+            std::memcpy(buffer, self->data->data() + self->pos, n);
+            self->pos += n;
+        }
+        return static_cast<int64_t>(n);
+    };
+
+    return state->load(plugin, &stream, contextType);
+}
+} // namespace
+
+TestResult PluginTests::testStateContext(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "state-context";
+    const std::string description =
+        "If the plugin implements the 'state-context' extension, checks that saving and reloading "
+        "the state reproduces the parameter values and a byte-identical state for each context "
+        "type (preset, duplicate, project).";
+
+    struct Context
+    {
+        uint32_t type;
+        const char *name;
+    };
+    static const Context contexts[] = {{CLAP_STATE_CONTEXT_FOR_PRESET, "preset"},
+                                       {CLAP_STATE_CONTEXT_FOR_DUPLICATE, "duplicate"},
+                                       {CLAP_STATE_CONTEXT_FOR_PROJECT, "project"}};
+
+    try
+    {
+        Prng prng = newPrng();
+
+        for (const Context &context : contexts)
+        {
+            auto host = std::make_shared<Host>();
+            std::vector<uint8_t> expectedState;
+            std::map<clap_id, double> expectedValues;
+            ParamInfoMap paramInfos;
+
+            {
+                auto plugin = library.createPlugin(pluginId, host);
+                if (!plugin->init())
+                {
+                    return TestResult::failed(testName, description, "Failed to initialize plugin");
+                }
+                // A malformed audio-ports layout is reported by the audio-ports/process checks;
+                // here we only need to drive parameters, so fall back to no audio ports on failure.
+                AudioPortConfig audioConfig;
+                try
+                {
+                    audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+                }
+                catch (const std::exception &)
+                {
+                }
+                auto params = ParamsExt::create(*plugin);
+                if (!params)
+                {
+                    return TestResult::skipped(
+                        testName, description,
+                        "The plugin does not implement the 'params' extension.");
+                }
+                const auto *stateCtx = static_cast<const clap_plugin_state_context_t *>(
+                    plugin->getExtension(CLAP_EXT_STATE_CONTEXT));
+                if (!stateCtx || !stateCtx->save || !stateCtx->load)
+                {
+                    return TestResult::skipped(
+                        testName, description,
+                        "The plugin does not implement the 'state-context' extension.");
+                }
+                host->handleCallbacksOnce();
+
+                paramInfos = params->info();
+                EventList paramEventQueue;
+                ParamFuzzer(paramInfos).randomizeParamsAt(prng, 0, paramEventQueue);
+                std::vector<Event> paramEvents = paramEventQueue.events();
+
+                AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+                ProcessingTest(*plugin, host, buffers)
+                    .runOnce(ProcessConfig{},
+                             [&](ProcessData &processData)
+                             {
+                                 for (const auto &event : paramEvents)
+                                 {
+                                     processData.inputEvents().push(event);
+                                 }
+                             });
+
+                expectedValues = getAllParamValues(*params, paramInfos);
+                expectedState = saveStateContext(stateCtx, plugin->clapPlugin(), context.type);
+                host->handleCallbacksOnce();
+            }
+
+            auto plugin2 = library.createPlugin(pluginId, host);
+            if (!plugin2->init())
+            {
+                return TestResult::failed(testName, description,
+                                          "Failed to initialize the second plugin instance");
+            }
+            auto params2 = ParamsExt::create(*plugin2);
+            if (!params2)
+            {
+                return TestResult::skipped(testName, description,
+                                           "The plugin does not implement the 'params' extension.");
+            }
+            const auto *stateCtx2 = static_cast<const clap_plugin_state_context_t *>(
+                plugin2->getExtension(CLAP_EXT_STATE_CONTEXT));
+            if (!stateCtx2)
+            {
+                return TestResult::skipped(
+                    testName, description,
+                    "The plugin does not implement the 'state-context' extension.");
+            }
+            host->handleCallbacksOnce();
+
+            if (!loadStateContext(stateCtx2, plugin2->clapPlugin(), expectedState, context.type))
+            {
+                throw std::runtime_error(std::string("Loading the '") + context.name +
+                                         "' state failed.");
+            }
+            host->handleCallbacksOnce();
+
+            std::map<clap_id, double> actualValues = getAllParamValues(*params2, paramInfos);
+            if (actualValues != expectedValues)
+            {
+                throw std::runtime_error(
+                    std::string("After a '") + context.name +
+                    "' state round-trip, the parameter values do not match:" +
+                    formatMismatchingValues(actualValues, expectedValues, params2->info()));
+            }
+
+            std::vector<uint8_t> actualState =
+                saveStateContext(stateCtx2, plugin2->clapPlugin(), context.type);
+            host->handleCallbacksOnce();
+
+            if (auto err = host->getCallbackError())
+            {
+                return TestResult::failed(testName, description, *err);
+            }
+            if (actualState != expectedState)
+            {
+                throw std::runtime_error(std::string("Re-saving the '") + context.name +
+                                         "' state produced a different state file (" +
+                                         std::to_string(expectedState.size()) +
+                                         " bytes expected, " + std::to_string(actualState.size()) +
+                                         " bytes actual).");
+            }
+        }
+
+        return TestResult::success(testName, description,
+                                   "preset, duplicate, and project contexts round-trip");
     }
     catch (const std::exception &e)
     {
