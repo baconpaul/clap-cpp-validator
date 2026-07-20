@@ -276,8 +276,17 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"param-range-robustness",
          "Sends parameter value events below the minimum and above the maximum for every "
          "automatable parameter and checks that the plugin does not crash and that no parameter's "
-         "'get_value' becomes non-finite. (Clamping out-of-range values is the host's "
-         "responsibility per the CLAP spec, so a merely out-of-range value is not failed.)"}};
+         "'get_value' becomes non-finite. The spec does not define what a base value outside "
+         "[min, max] means, so a merely out-of-range value is not failed."},
+        {"lifecycle-negative-path",
+         "Drives the plugin's activation state machine out of order (process and start_processing "
+         "before activate, activate twice, deactivate while processing) and checks that it "
+         "survives "
+         "without crashing or calling host functions from the wrong thread. These calls violate "
+         "the "
+         "CLAP contract, which the host is required to uphold, so conformant plugins are free to "
+         "crash: this is a 'dangerous' opt-in check (see --dangerous-tests).",
+         /*dangerous=*/true}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -403,6 +412,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "param-range-robustness")
     {
         return testParamRangeRobustness(library, pluginId);
+    }
+    else if (testName == "lifecycle-negative-path")
+    {
+        return testLifecycleNegativePath(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2897,10 +2910,9 @@ TestResult PluginTests::testParamRangeRobustness(PluginLibrary &library,
     const std::string testName = "param-range-robustness";
     const std::string description =
         "Sends parameter value events below the minimum and above the maximum for every "
-        "automatable "
-        "parameter and checks that the plugin does not crash and that no parameter's 'get_value' "
-        "becomes non-finite. (Clamping out-of-range values is the host's responsibility per the "
-        "CLAP spec, so a merely out-of-range value is not failed.)";
+        "automatable parameter and checks that the plugin does not crash and that no parameter's "
+        "'get_value' becomes non-finite. The spec does not define what a base value outside "
+        "[min, max] means, so a merely out-of-range value is not failed.";
 
     try
     {
@@ -2923,8 +2935,9 @@ TestResult PluginTests::testParamRangeRobustness(PluginLibrary &library,
         ParamInfoMap paramInfos = params->info();
 
         // Drive one process cycle that sets every automatable parameter to an out-of-range value.
-        // The spec makes the host responsible for sending in-range values, so we don't require the
-        // plugin to clamp; we only require that it survives and never reports a NaN/Inf value.
+        // The spec does not define the meaning of a base value outside [min, max] (and note the
+        // heard value is param_value + param_mod, which routinely exceeds the range), so we don't
+        // require the plugin to clamp; we only require that it survives and never reports NaN/Inf.
         auto applyOutOfRange = [&](bool below)
         {
             AudioBuffers buffers(audioConfig, BUFFER_SIZE);
@@ -2999,6 +3012,165 @@ TestResult PluginTests::testParamRangeRobustness(PluginLibrary &library,
                                           formatTruncatedList(violations));
         }
         return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testLifecycleNegativePath(PluginLibrary &library,
+                                                  const std::string &pluginId)
+{
+    const std::string testName = "lifecycle-negative-path";
+    const std::string description =
+        "Drives the plugin's activation state machine out of order (process and start_processing "
+        "before activate, activate twice, deactivate while processing) and checks that it survives "
+        "without crashing or calling host functions from the wrong thread. Best run "
+        "out-of-process.";
+
+    auto statusName = [](clap_process_status s) -> std::string
+    {
+        switch (s)
+        {
+        case CLAP_PROCESS_ERROR:
+            return "ERROR";
+        case CLAP_PROCESS_CONTINUE:
+            return "CONTINUE";
+        case CLAP_PROCESS_CONTINUE_IF_NOT_QUIET:
+            return "CONTINUE_IF_NOT_QUIET";
+        case CLAP_PROCESS_TAIL:
+            return "TAIL";
+        case CLAP_PROCESS_SLEEP:
+            return "SLEEP";
+        default:
+            return "unknown(" + std::to_string(s) + ")";
+        }
+    };
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        std::vector<std::string> observations;
+        std::vector<std::string> findings;
+
+        auto captureCallbackError = [&](const std::string &where)
+        {
+            host->handleCallbacksOnce();
+            if (auto err = host->getCallbackError())
+            {
+                findings.push_back(where + ": " + *err);
+                host->clearCallbackError();
+            }
+        };
+
+        // These calls deliberately violate the documented state-machine preconditions, so we drive
+        // the raw clap_plugin pointer directly rather than the guarded Plugin wrapper. Each
+        // sub-test uses a fresh instance so a survivable violation doesn't taint the next.
+
+        // 1. process() before activate.
+        {
+            auto plugin = library.createPlugin(pluginId, host);
+            if (plugin->init())
+            {
+                auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+                AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+                ProcessData processData(buffers, ProcessConfig{});
+                const clap_plugin_t *cp = plugin->clapPlugin();
+                clap_process_status status = CLAP_PROCESS_ERROR;
+                if (cp->process)
+                {
+                    AudioThreadGuard guard(host);
+                    clap_process_t clapProcess = processData.clapProcess();
+                    status = cp->process(cp, &clapProcess);
+                }
+                observations.push_back("process() before activate returned " + statusName(status));
+            }
+            captureCallbackError("process() before activate");
+        }
+
+        // 2. start_processing() before activate.
+        {
+            auto plugin = library.createPlugin(pluginId, host);
+            if (plugin->init())
+            {
+                const clap_plugin_t *cp = plugin->clapPlugin();
+                bool started = false;
+                if (cp->start_processing)
+                {
+                    AudioThreadGuard guard(host);
+                    started = cp->start_processing(cp);
+                    if (started && cp->stop_processing)
+                    {
+                        cp->stop_processing(cp);
+                    }
+                }
+                observations.push_back(std::string("start_processing() before activate returned ") +
+                                       (started ? "true" : "false"));
+            }
+            captureCallbackError("start_processing() before activate");
+        }
+
+        // 3. activate() twice without an intervening deactivate.
+        {
+            auto plugin = library.createPlugin(pluginId, host);
+            if (plugin->init())
+            {
+                const clap_plugin_t *cp = plugin->clapPlugin();
+                bool first = cp->activate && cp->activate(cp, 44100.0, 1, BUFFER_SIZE);
+                bool second = false;
+                if (first && cp->activate)
+                {
+                    second = cp->activate(cp, 44100.0, 1, BUFFER_SIZE);
+                }
+                if (first && cp->deactivate)
+                {
+                    cp->deactivate(cp);
+                }
+                observations.push_back(std::string("double activate() returned ") +
+                                       (first ? "true" : "false") + " then " +
+                                       (second ? "true" : "false"));
+            }
+            captureCallbackError("double activate()");
+        }
+
+        // 4. deactivate() while processing (no stop_processing first).
+        {
+            auto plugin = library.createPlugin(pluginId, host);
+            if (plugin->init())
+            {
+                const clap_plugin_t *cp = plugin->clapPlugin();
+                if (cp->activate && cp->activate(cp, 44100.0, 1, BUFFER_SIZE))
+                {
+                    if (cp->start_processing)
+                    {
+                        AudioThreadGuard guard(host);
+                        cp->start_processing(cp);
+                    }
+                    if (cp->deactivate)
+                    {
+                        cp->deactivate(cp);
+                    }
+                    observations.push_back("deactivate() while processing survived");
+                }
+            }
+            captureCallbackError("deactivate() while processing");
+        }
+
+        if (!findings.empty())
+        {
+            return TestResult::failed(
+                testName, description,
+                "The plugin misbehaved when its state machine was driven out of order:" +
+                    formatTruncatedList(findings));
+        }
+
+        std::string detail;
+        for (size_t i = 0; i < observations.size(); ++i)
+        {
+            detail += (i ? "; " : "") + observations[i];
+        }
+        return TestResult::success(testName, description, detail);
     }
     catch (const std::exception &e)
     {

@@ -118,24 +118,31 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
   assertion remains a future extension.
 - **Parameter defaults** ★ ✅ (S) — **Implemented** (`param-defaults`): a freshly created plugin's
   `get_value` for each parameter must equal its declared `default_value`.
-- **Plugin lifecycle state machine** ★ ✅ (partial) — **Implemented** (`process-reactivation`):
-  reactivates across a spread of sample rates and `min ≠ max` block sizes (including 1-sample and
-  large blocks) and processes consistently each time. The negative-path assertions (`activate`
-  twice fails; `process` / `start_processing` before `activate` errors; `deactivate` while
-  processing) remain a future extension — they are best driven under out-of-process isolation since
-  a nonconformant plugin may crash.
+- **Plugin lifecycle state machine** ★ ✅ — the positive path is **`process-reactivation`**
+  (reactivates across a spread of sample rates and `min ≠ max` block sizes, including 1-sample and
+  large blocks, processing consistently each time). The negative path is **`lifecycle-negative-path`**
+  (process/start_processing before activate, activate twice, deactivate while processing). Important
+  finding: `plugin.h` marks these as **preconditions the host must uphold**, so plugins are free to
+  crash on them — and nearly all do, including `GainPlugin`, the CLAP template, and the reference
+  `clap-validator-plugin` (activate-twice alone crashed 22 of 53 installed plugins). It is therefore
+  a **"dangerous" opt-in check**, hidden unless `--dangerous-tests` is passed, and useful mainly to
+  a plugin author who *wants* to know their plugin isn't defensive against host misbehavior. (Surge
+  XT and Six Sines, notably, survive it.)
 - **`get_extension` contract** ✅ (S) — **Implemented** (`get-extension-contract`): returns the
   *same* pointer on repeated calls, `null` for unknown ids, callable after `init`, and stable across
   activation.
 - **Note lifecycle** (M) — a note-output plugin should emit `CLAP_EVENT_NOTE_END` for note-ids it
   finishes, referencing note-ids it actually started.
 - **Param range clamping / robustness** ✅ (S) — **Implemented** (`param-range-robustness`). Note:
-  the sweep showed clamping is *not* an ecosystem norm — the spec makes the host responsible for
-  sending in-range values, so most plugins (including Surge XT) store what they're given. The check
-  therefore does **not** require clamping; it sends below-min/above-max values and requires only
-  that the plugin does not crash and never reports a non-finite `get_value`. This still surfaced
-  real findings: several plugins crash on out-of-range param input despite handling in-range fuzzing
-  fine.
+  the sweep showed clamping is *not* an ecosystem norm, and — importantly — the spec does **not**
+  actually require it. There is no "clamp"/"out of range" language anywhere in the headers; in fact
+  `events.h` states the heard value is `param_value + param_mod` (so the effective value routinely
+  exceeds `[min, max]`), and the `param_value.value` field is documented with no range constraint.
+  So a base value outside `[min, max]` is simply *undefined*, not a violation by either side. The
+  check therefore does **not** require clamping; it sends below-min/above-max values and requires
+  only that the plugin does not crash and never reports a non-finite `get_value`. This still
+  surfaced real findings: several plugins crash on out-of-range param input despite handling
+  in-range fuzzing fine.
 - **NaN/Inf/denormal *input* resilience** (S) — feed pathological input audio; the plugin must not
   emit NaN/Inf (complements the existing output-finite check).
 - **DSP determinism** (M) — identical input + parameters on two fresh instances produce identical

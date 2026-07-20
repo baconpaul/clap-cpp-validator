@@ -41,6 +41,9 @@ struct ValidatorSettings
     // When true (the default) the plugin's own stdout/stderr is hushed so it doesn't intersperse
     // with the validator's output.
     bool suppressPluginStdout = true;
+    // When true, also run checks marked "dangerous" (they deliberately violate the CLAP contract
+    // and will crash conformant plugins). Off by default.
+    bool dangerousTests = false;
     // Path to this executable, used to re-spawn it for out-of-process checks.
     std::string executablePath;
 };

@@ -84,6 +84,10 @@ struct TestCaseInfo
 {
     std::string name;
     std::string description;
+    // Dangerous checks deliberately violate the CLAP contract (e.g. driving the state machine out
+    // of order). They crash conformant plugins by design, so they are skipped unless the user opts
+    // in with --dangerous-tests.
+    bool dangerous = false;
 };
 
 // Get the status code as a string

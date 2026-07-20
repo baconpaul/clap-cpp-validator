@@ -38,7 +38,9 @@ void printUsage(const char *programName)
     std::cout << "  --only-failed        Only show failed tests\n";
     std::cout << "  --full-output        Show untruncated detail lists (every mismatch, etc.)\n";
     std::cout << "  --show-plugin-stdout Don't hush the plugin's own stdout/stderr\n";
-    std::cout << "  --in-process         Run all checks in this process (no crash isolation)\n\n";
+    std::cout << "  --in-process         Run all checks in this process (no crash isolation)\n";
+    std::cout << "  --dangerous-tests    Also run checks that deliberately violate the CLAP\n";
+    std::cout << "                       contract (they crash conformant plugins by design)\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << programName << " validate /path/to/plugin.clap\n";
     std::cout << "  " << programName << " validate /path/to/plugin.clap --json\n";
@@ -204,6 +206,10 @@ int main(int argc, char *argv[])
             else if (arg == "--show-plugin-stdout")
             {
                 settings.suppressPluginStdout = false;
+            }
+            else if (arg == "--dangerous-tests")
+            {
+                settings.dangerousTests = true;
             }
             else if (arg[0] != '-')
             {

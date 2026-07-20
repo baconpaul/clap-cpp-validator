@@ -26,7 +26,8 @@ cmake --build build
 ```
 
 Useful flags: `--test <regex>` (filter checks), `--plugin-id <id>` (one plugin in a multi-plugin
-bundle), `--json`, `--only-failed`, `--in-process`. `USE_ASAN=ON` builds with ASan/UBSan.
+bundle), `--json`, `--only-failed`, `--in-process`, `--dangerous-tests` (also run contract-violating
+checks). `USE_ASAN=ON` builds with ASan/UBSan.
 
 ## High-level architecture
 
@@ -202,6 +203,13 @@ terminating signal becomes a `Crashed` result naming the signal. `--in-process` 
 into a single process (the old behavior, where a crash is fatal). Windows always runs in-process for
 now — the subprocess path is POSIX-only (`fork`/`execvp`/`waitpid`).
 
+**Dangerous checks.** A `TestCaseInfo` may be flagged `dangerous`. Such a check deliberately
+violates the CLAP contract (e.g. `lifecycle-negative-path` drives the state machine out of order),
+which conformant plugins are entitled to crash on. Dangerous checks are skipped by default and only
+run with `--dangerous-tests`; `list tests` marks them `(dangerous)`. They are meant for a plugin
+author probing their own robustness, not for pass/fail conformance — out-of-process isolation keeps
+a crash from taking down the run.
+
 ## The checks
 
 Run `clap-validator list tests` for the authoritative list. As of this writing:
@@ -252,7 +260,8 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `state-context` | state round-trips per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE` context and agrees with plain `state` |
 | `param-indication` | `set_mapping`/`set_automation` for every parameter (main-thread) does not crash or misbehave |
 | `get-extension-contract` | unknown ids return null; repeated `get_extension` calls return the same pointer, stable across activation |
-| `param-range-robustness` | out-of-range parameter events don't crash the plugin or make `get_value` non-finite (clamping is the host's job, so not required) |
+| `param-range-robustness` | out-of-range parameter events don't crash the plugin or make `get_value` non-finite (clamping is undefined by the spec, so not required) |
+| `lifecycle-negative-path` *(dangerous)* | drives the activation state machine out of order; conformant plugins may crash, so it is opt-in via `--dangerous-tests` |
 
 > `process-reactivation` and everything from `context-menu` down are not part of the Rust
 > validator; they are the new checks added from [validation-roadmap.md](validation-roadmap.md).

@@ -455,6 +455,10 @@ int validate(const ValidatorSettings &settings)
             {
                 continue;
             }
+            if (testInfo.dangerous && !settings.dangerousTests)
+            {
+                continue;
+            }
 
             TestResult result =
                 settings.inProcess
@@ -538,6 +542,10 @@ int validate(const ValidatorSettings &settings)
                 for (const auto &testInfo : pluginTests)
                 {
                     if (!matchesFilter(testInfo.name, settings))
+                    {
+                        continue;
+                    }
+                    if (testInfo.dangerous && !settings.dangerousTests)
                     {
                         continue;
                     }

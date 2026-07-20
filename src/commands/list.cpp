@@ -227,14 +227,14 @@ int listTests(bool json)
         std::cout << "Plugin Library Tests:\n";
         for (const auto &test : libraryTests)
         {
-            std::cout << "  " << test.name << "\n";
+            std::cout << "  " << test.name << (test.dangerous ? "  (dangerous)" : "") << "\n";
             std::cout << "    " << test.description << "\n\n";
         }
 
         std::cout << "Plugin Tests:\n";
         for (const auto &test : pluginTests)
         {
-            std::cout << "  " << test.name << "\n";
+            std::cout << "  " << test.name << (test.dangerous ? "  (dangerous)" : "") << "\n";
             std::cout << "    " << test.description << "\n\n";
         }
     }
