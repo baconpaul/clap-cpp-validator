@@ -75,8 +75,10 @@ Throwing `std::runtime_error` is the C++ stand-in for Rust returning `Err`, and 
 (`Success`/`Crashed`/`Failed`/`Skipped`/`Warning`), and optional details.
 
 **Adding a check:** add the registry entry, the dispatch branch, and the implementation method
-(declared in the corresponding `.h`). Match the kebab-case id to the Rust validator's id string —
-that string is the stable identity across the two implementations.
+(declared in the corresponding `.h`). For a check ported from the Rust validator, match the
+kebab-case id to the Rust id string — that string is the stable identity across the two
+implementations. Checks with no Rust counterpart (the extension checks added here) simply take a
+fresh kebab-case id.
 
 ## The host / plugin layer
 
@@ -250,5 +252,6 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `state-context` | state round-trips per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE` context and agrees with plain `state` |
 | `param-indication` | `set_mapping`/`set_automation` for every parameter (main-thread) does not crash or misbehave |
 
-> `context-menu` and the five extension read-checks below it are not part of the Rust validator;
-> they are the new-extension checks from [validation-roadmap.md](validation-roadmap.md).
+> `process-reactivation` and everything from `context-menu` down are not part of the Rust
+> validator; they are the new checks added from [validation-roadmap.md](validation-roadmap.md).
+> Likewise `factory-invalidation` and `factory-state-converter` in the per-library table.

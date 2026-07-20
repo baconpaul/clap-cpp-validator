@@ -12,10 +12,11 @@ large batch of extensions graduated from `draft/` to stable (`preset-load`, `rem
 1.2.10. **Every one of those stable extensions postdates the validator's baseline**, so the tool has
 no knowledge of them.
 
-Today the header tree ships **27 stable + 18 draft extensions** and **4 factories**. The validator
-actively exercises just five plugin extensions, implements three host extensions, and uses two
-factories (see [Current coverage](#current-coverage)). This document proposes where to expand,
-organized into three buckets:
+Today the header tree ships **27 stable + 18 draft extensions** and **4 factories**. The Rust
+baseline exercised just five plugin extensions, implemented three host extensions, and used two
+factories; this port has since grown well past that (see [Current coverage](#current-coverage), and
+the ✅ marks throughout show what has landed). This document proposes where to expand, organized
+into three buckets:
 
 1. [Untested / unvalidated extensions & factories](#category-1--untested--unvalidated-extensions--factories)
 2. [Changed documentation / constraints we can now validate](#category-2--changed-documentation--constraints-we-can-now-validate)
@@ -25,13 +26,20 @@ organized into three buckets:
 
 ## Current coverage
 
-- **Plugin extensions exercised:** `audio-ports`, `note-ports`, `params`, `state`, `preset-load`.
-- **Host extensions implemented:** `thread-check`, `params` (rescan/clear/request_flush → flush),
-  `state` (mark_dirty).
-- **Factories used:** `plugin-factory` (descriptor + create), `preset-discovery`.
+Baseline (from the Rust validator) in plain text; **bold** entries were added by this port.
 
-Everything else in the header tree is currently unobserved. A full inventory is in the
-[Appendix](#appendix--extension--factory-inventory).
+- **Plugin extensions exercised:** `audio-ports`, `note-ports`, `params`, `state`, `preset-load`,
+  **`latency`**, **`tail`**, **`render`**, **`voice-info`**, **`note-name`**,
+  **`audio-ports-config`**, **`remote-controls`**, **`context-menu`**, **`state-context`**,
+  **`param-indication`**.
+- **Host extensions implemented:** `thread-check`, `params` (rescan/clear/request_flush → flush),
+  `state` (mark_dirty), **`log`** (surfaces `WARNING`+ and `*_MISBEHAVING` as findings),
+  **`preset-load`** (`on_error`/`loaded`), and **`changed()` callbacks** for `latency`, `tail`,
+  `note-name`, `voice-info`, and `audio-ports`.
+- **Factories used:** `plugin-factory` (descriptor + create), `preset-discovery`,
+  **`plugin-invalidation`**, **`plugin-state-converter`**.
+
+A full inventory of what remains is in the [Appendix](#appendix--extension--factory-inventory).
 
 ---
 
@@ -54,7 +62,7 @@ The plugin provides these; the host reads them and asserts invariants. Cheap, sa
 | `audio-ports-activation` / `configurable-audio-ports` / `extensible-audio-ports` | M | Exercise (de)activation & reconfiguration APIs, then re-check `audio-ports`. |
 | `param-indication` ✅ | S | Call `set_mapping`/`set_automation`; smoke-test for no crash and correct thread. **Implemented** (`param-indication` check; passes on GainPlugin). |
 | `context-menu` ✅ | M | `populate` a target; validate the returned entry structure. **Implemented** (`context-menu` check). |
-| `gui` | M | `is_api_supported`/`get_preferred_api`; create → get_size → destroy **without showing**; `can_resize`/`adjust_size` sanity. Platform-sensitive. |
+| `gui` ⏸ | M | `is_api_supported`/`get_preferred_api`; create → get_size → destroy **without showing**; `can_resize`/`adjust_size` sanity. Platform-sensitive. **Deferred** — see the tiered plan in [how-to-test-gui.plan](how-to-test-gui.plan). |
 | `surround` / `ambisonic` | M | Channel-mask / channel-map queries. Niche. |
 
 ### 1b. Host extensions to implement
@@ -135,28 +143,44 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
 
 ## Suggested first tranche
 
-Highest bang-for-buck to start:
+The original high-value tranche has **all landed** (✅):
 
-1. **Host `log`** — surfaces plugins' own self-reported conformance problems (1b, S).
-2. **Trivial read-checks** — `latency`, `tail`, `voice-info`, `note-name`, `render` (1a, S).
-3. **Cheap Category 3 wins** — parameter defaults, `get_extension` contract, lifecycle state machine.
-4. **`state-context`** — extends the existing, well-tested state machinery (1a, M).
+1. ✅ **Host `log`** — surfaces plugins' own self-reported conformance problems (1b, S).
+2. ✅ **Trivial read-checks** — `latency`, `tail`, `voice-info`, `note-name`, `render` (1a, S).
+3. ✅ **Cheap Category 3 wins** — parameter defaults and param-info stability landed; the
+   `get_extension` contract and the negative-path lifecycle assertions remain.
+4. ✅ **`state-context`** — extends the existing, well-tested state machinery (1a, M).
 
-Each is small and independent, so they can land as separate reviewed changes.
+Beyond that, the checks added since are `audio-ports-config`, `remote-controls`, `context-menu`,
+`param-indication`, `process-reactivation` (+ process return-value validation), and the two
+draft-factory checks (`factory-invalidation`, `factory-state-converter`).
+
+### Still open (good next candidates)
+
+- **`get_extension` contract** and the **negative-path lifecycle** assertions (activate-twice,
+  process-before-activate) — the latter best driven under out-of-process isolation.
+- Host **`timer-support`** / **`posix-fd-support`** / **`thread-pool`**; **`remote-controls`** host
+  `changed()`.
+- **`audio-ports-activation`** / **`configurable-audio-ports`** / **`extensible-audio-ports`**;
+  **`surround`** / **`ambisonic`**.
+- Behavioral: **note lifecycle** (`NOTE_END`), **param range clamping**, **NaN/Inf input
+  resilience**, **DSP determinism**, **f64 / in-place processing**, and the ENUM
+  no-blank-`value_to_text` rule.
+- **`gui`** — see [how-to-test-gui.plan](how-to-test-gui.plan).
 
 ---
 
 ## Appendix — extension & factory inventory
 
-**Currently exercised** (8 extensions + 2 factories):
-`audio-ports`, `note-ports`, `params`, `state`, `preset-load` (plugin) · `thread-check`, `params`,
-`state` (host) · `plugin-factory`, `preset-discovery` (factories).
+**Currently exercised** (15 plugin + 5 host extensions + 4 factories):
+`audio-ports`, `note-ports`, `params`, `state`, `preset-load`, `latency`, `tail`, `render`,
+`voice-info`, `note-name`, `audio-ports-config`, `remote-controls`, `context-menu`, `state-context`,
+`param-indication` (plugin) · `thread-check`, `params`, `state`, `log`, `preset-load` (host) ·
+`plugin-factory`, `preset-discovery`, `plugin-invalidation`, `plugin-state-converter` (factories).
 
-**Stable extensions not yet exercised (22):**
-`ambisonic`, `audio-ports-activation`, `audio-ports-config`, `configurable-audio-ports`,
-`context-menu`, `event-registry`, `gui`, `latency`, `log`, `note-name`, `param-indication`,
-`posix-fd-support`, `remote-controls`, `render`, `state-context`, `surround`, `tail`, `thread-pool`,
-`timer-support`, `track-info`, `voice-info`. *(All of the 2023‑12‑20 graduation batch is here.)*
+**Stable extensions not yet exercised (10):**
+`ambisonic`, `audio-ports-activation`, `configurable-audio-ports`, `event-registry`, `gui`,
+`posix-fd-support`, `surround`, `thread-pool`, `timer-support`, `track-info`.
 
 **Draft extensions not yet exercised (18):**
 `background-activation`, `background-progress`, `background-state-context`, `extensible-audio-ports`,

@@ -1,0 +1,169 @@
+# How to test the `gui` extension — a plan for discussion
+
+**Status:** proposal, not yet implemented. GUI validation was deliberately deferred out of the
+1.2.10 coverage push because it is the one extension whose checks cannot be written the same way as
+every other check: the rest of the validator runs fully headless and deterministic, and the `gui`
+extension does not.
+
+This document lays out *what* is worth testing, *why it is awkward*, and a *tiered* proposal so we
+can agree on how far to go before writing code. Nothing here is built yet.
+
+## Why `gui` is different from every other check
+
+Every existing check creates a plugin, drives it, and asserts on return values — no operating-system
+services, no display, no event loop. The `gui` extension breaks all three assumptions:
+
+1. **It needs a windowing system.** Embedding (`set_parent`) requires a real native parent window
+   (`NSView` on cocoa, `HWND` on win32, an X11 window id, a wayland surface). Even *querying* some
+   plugins (`get_size`) is only well-defined after `create()`, and a few only after `set_parent()`.
+2. **It is strictly platform-specific.** The window handle union in `clap_window_t` is a different
+   real type per OS, so the harness needs a per-platform back end. There is no portable "make me a
+   parent window" call.
+3. **It has hard thread and run-loop requirements.** Almost every `clap_plugin_gui` method is
+   `[main-thread]`, and on macOS a plugin UI legitimately expects to be created and shown from the
+   thread running `NSApplication`'s run loop. A headless CI worker may have no run loop and, on
+   Linux, no `$DISPLAY` at all.
+
+So GUI checks force decisions the other checks never had to make: *do we require a display in CI?
+Do we actually show a window? How much platform code are we willing to carry?* Those are the
+questions this plan is meant to settle.
+
+## The contract we would be validating
+
+The header (`clap/ext/gui.h`) documents the canonical show sequence, which is the spec we would
+assert against:
+
+```
+is_api_supported -> create -> [floating: set_transient/suggest_title]
+                            -> [embedded: set_scale/can_resize/get_size or set_size -> set_parent]
+                 -> show -> (hide/show)* -> destroy
+```
+
+Plus the host-side `clap_host_gui` callbacks a plugin may call back into: `request_resize`,
+`request_show`, `request_hide`, `resize_hints_changed`, `closed`.
+
+## Tiered proposal
+
+Each tier is independently shippable and strictly more demanding on the environment than the last.
+We can stop at any tier.
+
+### Tier 0 — query only (fully headless, zero risk) ★ recommended first
+
+No window is ever created. Purely reads the plugin's declared capabilities.
+
+- `is_api_supported(api, is_floating)` for every `CLAP_WINDOW_API_*` × {floating, embedded}.
+- `get_preferred_api(&api, &is_floating)`: if it returns true, assert `api` is exactly one of the
+  known `CLAP_WINDOW_API_*` pointers (the header requires the constant, not a strcpy), and that the
+  plugin also reports that api/mode as supported via `is_api_supported`.
+- Assert the plugin supports *at least one* api for the current platform (a plugin that ships a
+  `gui` extension but supports no api on any platform is suspect).
+- Thread assertion: all of the above are `[main-thread]`; run them under the main-thread guard so a
+  misbehaving plugin that hops threads internally is caught by the existing thread-check host.
+
+This tier is safe to run in headless CI on all platforms and needs no new platform code.
+
+### Tier 1 — create/destroy without a parent (headless, low risk)
+
+Create GUI resources for the platform-native embedded api, then tear them down **without ever
+showing or parenting**. Exercises the allocate/free path and the size/resize query surface.
+
+- `create(nativeApi, is_floating=false)` → expect true (skip the tier if the plugin only supports
+  floating).
+- `set_scale(1.0)` and `set_scale(2.0)` — accept either true or false (the header says false just
+  means "ignored").
+- `get_size(&w,&h)` → non-zero, sane upper bound.
+- `can_resize()`; if true: `get_resize_hints()` is coherent (if `preserve_aspect_ratio`, the aspect
+  numbers are non-zero), and `adjust_size(w,h)` is idempotent-ish (adjusting an already-adjusted
+  size returns the same size) and respects the hints (e.g. doesn't grow a fixed-height window).
+- `destroy()`.
+
+**Risk:** some plugins assume `set_parent` happens before `get_size`, so a strict version of this
+tier may produce false failures. Mitigation: treat a `get_size` failure *before* parenting as a
+skip-with-note rather than a hard fail, and only hard-fail in Tier 2 where a parent exists.
+
+### Tier 2 — embed into a real host window (needs a display)
+
+The real conformance test. Provide an actual native parent window and walk the full embedded
+sequence.
+
+- Platform back ends the harness would need:
+  - **cocoa:** create an off-screen `NSWindow`/`NSView` on the main thread; run the sequence inside
+    an `NSApplication` run loop. macOS GUI apps always have a display, so no Xvfb equivalent.
+  - **win32:** `CreateWindowEx` a hidden `HWND`; pump a minimal message loop.
+  - **x11:** open the display, create an unmapped window; **CI must run under `Xvfb`**.
+  - **wayland:** embedding is not supported by the spec — fall back to Tier 3 (floating) there.
+- Sequence to validate: `create` → `set_scale` → `can_resize`/`get_size` → `set_parent(realWindow)`
+  → `show` → `hide` → `destroy`, asserting the documented return values at each step and that every
+  call stayed on the main thread.
+- Resize round-trip: `adjust_size(w,h)` → `set_size(adjusted)` → `get_size` returns the size we set
+  (within the plugin's own adjustment). Drive one host-initiated `request_resize` and confirm the
+  host↔plugin handshake behaves.
+
+This is where a real `clap_host_gui` implementation is required (see below).
+
+### Tier 3 — floating windows (needs a display; interactive-ish)
+
+For plugins that only support floating mode (or in addition to Tier 2):
+
+- `create(api-or-null, is_floating=true)` → `set_transient(parent)` → `suggest_title("...")` →
+  `show` → `hide` → `destroy`.
+- Exercise `clap_host_gui->closed(was_destroyed=...)`: if the plugin calls it with
+  `was_destroyed=true`, the host must call `destroy()` to acknowledge — validate we honor that and
+  the plugin doesn't leak.
+
+## Host side: `clap_host_gui`
+
+Tiers 2–3 need the validator's `Host` to implement `clap_host_gui`:
+
+- `request_resize(w,h)` — accept and remember the request; assert w/h are sane. Return true.
+- `request_show` / `request_hide` — record the request; return true. (Headless, so it's a no-op with
+  bookkeeping.)
+- `resize_hints_changed` — mark that the plugin wants us to re-query `get_resize_hints`; the check
+  can then re-read and re-validate them.
+- `closed(was_destroyed)` — record; if `was_destroyed`, the check must call `destroy()`.
+
+These are mostly `[thread-safe]`, so unlike the plugin side they can be called from any thread; the
+host implementation must be safe to call off the main thread and should surface any obviously bogus
+argument as a finding, the same way the other host callbacks already do.
+
+## Environment / CI matrix
+
+| Platform | Tier 0/1 | Tier 2 embed | Tier 3 floating |
+|---|---|---|---|
+| macOS    | headless ok | needs main-thread run loop (always available) | ok |
+| Windows  | headless ok | hidden HWND + message pump | ok |
+| Linux X11| headless ok | **requires `Xvfb`** | requires Xvfb |
+| Wayland  | headless ok | not supported by spec | needs a compositor |
+
+Because a GUI plugin may hang or block waiting for a real UI event, **all GUI checks should run
+under the existing out-of-process isolation with a wall-clock timeout**, so a plugin that blocks in
+`show()` is reported as a timeout/crash rather than hanging the run.
+
+## Invariants worth asserting (once a window exists)
+
+- `create` before `get_size`/`set_parent`/`show` — calling them first should fail cleanly, not
+  crash (best exercised under out-of-process isolation).
+- `get_size` returns non-zero, and after a `set_size(adjust_size(x))` the reported size matches.
+- `adjust_size` never returns a size larger than requested along a locked axis, and honors a
+  preserved aspect ratio.
+- Every `clap_plugin_gui` call marked `[main-thread]` actually runs on the main thread (piggyback on
+  the existing thread-check host).
+- `destroy` releases resources — no leak, and a second `create` after `destroy` works.
+
+## Open questions for discussion
+
+1. **How far do we go?** Tier 0 is free and worth doing regardless. Is Tier 2 (real windows,
+   per-platform back ends, Xvfb in CI) in scope, or do we stop at Tier 1?
+2. **Do we actually `show()`?** Showing a window is the most realistic test but the most fragile in
+   CI. Option: create + parent but never `show` on CI, and only `show` behind an opt-in flag for
+   local/manual runs.
+3. **Which plugin do we trust as the reference?** We'd want one known-good embedded plugin per
+   platform to anchor the expected pass (e.g. Surge XT on macOS cocoa).
+4. **Floating vs embedded priority** — most hosts embed; is floating (Tier 3) worth the extra
+   host-callback surface, or a later follow-up?
+5. **Timeout policy** — what wall-clock budget makes a blocked `show()` a failure without flaking on
+   a slow first paint?
+
+Once we've picked a tier and answered the CI/display questions, the code follows the same shape as
+the other checks: a `gui-*` check (or a few) plus a `clap_host_gui` on the host, all under the
+out-of-process runner.
