@@ -252,6 +252,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `state-context` | state round-trips per `FOR_PRESET`/`FOR_PROJECT`/`FOR_DUPLICATE` context and agrees with plain `state` |
 | `param-indication` | `set_mapping`/`set_automation` for every parameter (main-thread) does not crash or misbehave |
 | `get-extension-contract` | unknown ids return null; repeated `get_extension` calls return the same pointer, stable across activation |
+| `param-range-robustness` | out-of-range parameter events don't crash the plugin or make `get_value` non-finite (clamping is the host's job, so not required) |
 
 > `process-reactivation` and everything from `context-menu` down are not part of the Rust
 > validator; they are the new checks added from [validation-roadmap.md](validation-roadmap.md).

@@ -129,8 +129,13 @@ Behavioral conformance not tied to the mere presence of one extension — the hi
   activation.
 - **Note lifecycle** (M) — a note-output plugin should emit `CLAP_EVENT_NOTE_END` for note-ids it
   finishes, referencing note-ids it actually started.
-- **Param range clamping / robustness** (S) — out-of-range parameter events must not yield
-  out-of-range `get_value` and must not crash.
+- **Param range clamping / robustness** ✅ (S) — **Implemented** (`param-range-robustness`). Note:
+  the sweep showed clamping is *not* an ecosystem norm — the spec makes the host responsible for
+  sending in-range values, so most plugins (including Surge XT) store what they're given. The check
+  therefore does **not** require clamping; it sends below-min/above-max values and requires only
+  that the plugin does not crash and never reports a non-finite `get_value`. This still surfaced
+  real findings: several plugins crash on out-of-range param input despite handling in-range fuzzing
+  fine.
 - **NaN/Inf/denormal *input* resilience** (S) — feed pathological input audio; the plugin must not
   emit NaN/Inf (complements the existing output-finite check).
 - **DSP determinism** (M) — identical input + parameters on two fresh instances produce identical

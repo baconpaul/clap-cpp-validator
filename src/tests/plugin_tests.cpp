@@ -272,7 +272,12 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"get-extension-contract",
          "Checks the 'clap_plugin.get_extension' contract: an unknown id returns null, repeated "
          "queries for the same id return the same pointer, and those pointers stay stable across "
-         "activation."}};
+         "activation."},
+        {"param-range-robustness",
+         "Sends parameter value events below the minimum and above the maximum for every "
+         "automatable parameter and checks that the plugin does not crash and that no parameter's "
+         "'get_value' becomes non-finite. (Clamping out-of-range values is the host's "
+         "responsibility per the CLAP spec, so a merely out-of-range value is not failed.)"}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -394,6 +399,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "get-extension-contract")
     {
         return testGetExtensionContract(library, pluginId);
+    }
+    else if (testName == "param-range-robustness")
+    {
+        return testParamRangeRobustness(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2873,6 +2882,121 @@ TestResult PluginTests::testGetExtensionContract(PluginLibrary &library,
         if (auto err = host->getCallbackError())
         {
             return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description);
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testParamRangeRobustness(PluginLibrary &library,
+                                                 const std::string &pluginId)
+{
+    const std::string testName = "param-range-robustness";
+    const std::string description =
+        "Sends parameter value events below the minimum and above the maximum for every "
+        "automatable "
+        "parameter and checks that the plugin does not crash and that no parameter's 'get_value' "
+        "becomes non-finite. (Clamping out-of-range values is the host's responsibility per the "
+        "CLAP spec, so a merely out-of-range value is not failed.)";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not implement the 'params' extension.");
+        }
+        auto audioConfig = AudioPortConfig::query(*plugin).value_or(AudioPortConfig{});
+        host->handleCallbacksOnce();
+
+        ParamInfoMap paramInfos = params->info();
+
+        // Drive one process cycle that sets every automatable parameter to an out-of-range value.
+        // The spec makes the host responsible for sending in-range values, so we don't require the
+        // plugin to clamp; we only require that it survives and never reports a NaN/Inf value.
+        auto applyOutOfRange = [&](bool below)
+        {
+            AudioBuffers buffers(audioConfig, BUFFER_SIZE);
+            ProcessData processData(buffers, ProcessConfig{});
+            for (const auto &[id, info] : paramInfos)
+            {
+                if (info.readonly() || (info.flags & CLAP_PARAM_IS_AUTOMATABLE) == 0)
+                {
+                    continue;
+                }
+                double range = info.maxValue - info.minValue;
+                double overshoot = std::max(1.0, std::abs(range));
+                clap_event_param_value_t e = {};
+                e.header.size = sizeof(clap_event_param_value_t);
+                e.header.time = 0;
+                e.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                e.header.type = CLAP_EVENT_PARAM_VALUE;
+                e.param_id = id;
+                e.cookie = info.cookie;
+                e.note_id = -1;
+                e.port_index = -1;
+                e.channel = -1;
+                e.key = -1;
+                e.value = below ? info.minValue - overshoot : info.maxValue + overshoot;
+                processData.inputEvents().push(Event::fromParamValue(e));
+            }
+
+            if (!plugin->activate(44100.0, 1, BUFFER_SIZE))
+            {
+                throw std::runtime_error("Failed to activate the plugin for processing.");
+            }
+            {
+                AudioThreadGuard guard(host);
+                plugin->startProcessing();
+                clap_process_t clapProcess = processData.clapProcess();
+                plugin->process(&clapProcess);
+                plugin->stopProcessing();
+            }
+            plugin->deactivate();
+            host->handleCallbacksOnce();
+        };
+
+        auto collectNonFinite = [&](const std::string &phase, std::vector<std::string> &out)
+        {
+            for (const auto &[id, info] : paramInfos)
+            {
+                double v = params->getValue(id);
+                if (!std::isfinite(v))
+                {
+                    out.push_back("parameter " + std::to_string(id) + " ('" + info.name +
+                                  "') returned a non-finite value " + formatDouble(v) + " after " +
+                                  phase);
+                }
+            }
+        };
+
+        std::vector<std::string> violations;
+        applyOutOfRange(true);
+        collectNonFinite("setting values below the minimum", violations);
+        applyOutOfRange(false);
+        collectNonFinite("setting values above the maximum", violations);
+
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        if (!violations.empty())
+        {
+            return TestResult::failed(testName, description,
+                                      "The plugin reported non-finite parameter values after "
+                                      "out-of-range events were sent:" +
+                                          formatTruncatedList(violations));
         }
         return TestResult::success(testName, description);
     }
