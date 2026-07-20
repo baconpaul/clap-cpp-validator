@@ -84,6 +84,7 @@ class PluginTests
     static TestResult testAudioPortsConfig(PluginLibrary &library, const std::string &pluginId);
     static TestResult testRemoteControls(PluginLibrary &library, const std::string &pluginId);
     static TestResult testStateContext(PluginLibrary &library, const std::string &pluginId);
+    static TestResult testParamIndication(PluginLibrary &library, const std::string &pluginId);
 
   private:
     // Helper for state reproducibility tests with optional null cookies

@@ -264,7 +264,11 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         {"state-context",
          "If the plugin implements the 'state-context' extension, checks that saving and reloading "
          "the state reproduces the parameter values and a byte-identical state for each context "
-         "type (preset, duplicate, project)."}};
+         "type (preset, duplicate, project)."},
+        {"param-indication",
+         "If the plugin implements the 'param-indication' extension, sets and clears mapping and "
+         "automation indications for every parameter on the main thread and checks that the plugin "
+         "does not crash or report misbehavior."}};
 }
 
 TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &library,
@@ -378,6 +382,10 @@ TestResult PluginTests::runTest(const std::string &testName, PluginLibrary &libr
     else if (testName == "state-context")
     {
         return testStateContext(library, pluginId);
+    }
+    else if (testName == "param-indication")
+    {
+        return testParamIndication(library, pluginId);
     }
 
     return TestResult::failed(testName, "Unknown test", "Test '" + testName + "' not found");
@@ -2676,6 +2684,86 @@ TestResult PluginTests::testStateContext(PluginLibrary &library, const std::stri
 
         return TestResult::success(testName, description,
                                    "preset, duplicate, and project contexts round-trip");
+    }
+    catch (const std::exception &e)
+    {
+        return TestResult::failed(testName, description, e.what());
+    }
+}
+
+TestResult PluginTests::testParamIndication(PluginLibrary &library, const std::string &pluginId)
+{
+    const std::string testName = "param-indication";
+    const std::string description =
+        "If the plugin implements the 'param-indication' extension, sets and clears mapping and "
+        "automation indications for every parameter on the main thread and checks that the plugin "
+        "does not crash or report misbehavior.";
+
+    try
+    {
+        auto host = std::make_shared<Host>();
+        auto plugin = library.createPlugin(pluginId, host);
+        if (!plugin->init())
+        {
+            return TestResult::failed(testName, description, "Failed to initialize plugin");
+        }
+
+        const auto *indication = static_cast<const clap_plugin_param_indication_t *>(
+            plugin->getExtension(CLAP_EXT_PARAM_INDICATION));
+        if (!indication)
+        {
+            indication = static_cast<const clap_plugin_param_indication_t *>(
+                plugin->getExtension(CLAP_EXT_PARAM_INDICATION_COMPAT));
+        }
+        if (!indication)
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin does not implement the 'param-indication' extension.");
+        }
+
+        auto params = ParamsExt::create(*plugin);
+        if (!params)
+        {
+            return TestResult::skipped(
+                testName, description,
+                "The plugin implements 'param-indication' but not 'params', so it exposes no "
+                "parameters to indicate.");
+        }
+        host->handleCallbacksOnce();
+
+        ParamInfoMap paramInfos = params->info();
+        const clap_plugin_t *cp = plugin->clapPlugin();
+        // alpha, red, green, blue
+        clap_color_t color{0xff, 0x20, 0x40, 0x80};
+
+        // set_mapping/set_automation are [main-thread]; we are on the main thread here.
+        for (const auto &[paramId, info] : paramInfos)
+        {
+            if (indication->set_mapping)
+            {
+                indication->set_mapping(cp, paramId, true, &color, "CC 1",
+                                        "Mapped to a hardware controller");
+                indication->set_mapping(cp, paramId, false, nullptr, nullptr, nullptr);
+            }
+            if (indication->set_automation)
+            {
+                for (uint32_t state = CLAP_PARAM_INDICATION_AUTOMATION_NONE;
+                     state <= CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING; ++state)
+                {
+                    indication->set_automation(cp, paramId, state, &color);
+                }
+                indication->set_automation(cp, paramId, CLAP_PARAM_INDICATION_AUTOMATION_NONE,
+                                           nullptr);
+            }
+        }
+
+        host->handleCallbacksOnce();
+        if (auto err = host->getCallbackError())
+        {
+            return TestResult::failed(testName, description, *err);
+        }
+        return TestResult::success(testName, description);
     }
     catch (const std::exception &e)
     {
