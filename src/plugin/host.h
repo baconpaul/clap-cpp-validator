@@ -63,6 +63,8 @@ class Host : public std::enable_shared_from_this<Host>
     void clearRequestedRestart() { requestedRestart_.store(false); }
     bool hasRequestedProcess() const { return requestedProcess_.load(); }
     void clearRequestedProcess() { requestedProcess_.store(false); }
+    bool hasRequestedFlush() const { return requestedFlush_.load(); }
+    void clearRequestedFlush() { requestedFlush_.store(false); }
 
   private:
     // CLAP host callbacks
@@ -108,6 +110,7 @@ class Host : public std::enable_shared_from_this<Host>
     std::atomic<bool> requestedCallback_{false};
     std::atomic<bool> requestedRestart_{false};
     std::atomic<bool> requestedProcess_{false};
+    std::atomic<bool> requestedFlush_{false};
 };
 
 // RAII guard class to mark the current thread as the audio thread

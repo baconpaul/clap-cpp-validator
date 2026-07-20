@@ -85,7 +85,11 @@ that string is the stable identity across the two implementations.
 - **`Host`** implements `clap_host` and the `thread-check`, `params`, and `state` host extensions.
   It records the main-thread id and, via `AudioThreadGuard` (an RAII marker), the audio-thread id,
   so host callbacks made from the wrong thread are recorded as callback errors. `handleCallbacksOnce()`
-  drains a pending `request_callback` by invoking the plugin's `on_main_thread`.
+  drains a pending `request_callback` by invoking the plugin's `on_main_thread`, and a pending
+  `clap_host_params::request_flush` by calling `clap_plugin_params::flush()` (with empty events)
+  while the plugin is inactive — honoring the flush request the way a real host would, which
+  matters for clap-first plugins that defer initializing their parameter model until the first
+  flush.
 - **`Plugin`** wraps a `clap_plugin` instance and its lifecycle (`init` → `activate` →
   `startProcessing` → `process` → `stopProcessing` → `deactivate`), plus `getExtension`,
   `descriptor`, and `onMainThread`.

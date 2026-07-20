@@ -112,6 +112,34 @@ void Host::handleCallbacksOnce()
     {
         currentPlugin_->onMainThread();
     }
+
+    // If the plugin asked us to flush its parameters, honor that here. We only do so while the
+    // plugin is inactive, because 'clap_plugin_params::flush()' must run on the audio thread while
+    // the plugin is active, and this runs on the main thread. The status check short-circuits so
+    // the request is left pending (not consumed) until the plugin is inactive.
+    if (currentPlugin_ && currentPlugin_->status() == PluginStatus::Inactive &&
+        requestedFlush_.exchange(false))
+    {
+        const auto *paramsExt = static_cast<const clap_plugin_params_t *>(
+            currentPlugin_->getExtension(CLAP_EXT_PARAMS));
+        if (paramsExt && paramsExt->flush)
+        {
+            // The host has no parameter changes of its own to send, and we discard any the plugin
+            // reports back.
+            clap_input_events_t inEvents{};
+            inEvents.ctx = nullptr;
+            inEvents.size = [](const clap_input_events_t *) -> uint32_t { return 0; };
+            inEvents.get = [](const clap_input_events_t *, uint32_t) -> const clap_event_header_t *
+            { return nullptr; };
+
+            clap_output_events_t outEvents{};
+            outEvents.ctx = nullptr;
+            outEvents.try_push = [](const clap_output_events_t *,
+                                    const clap_event_header_t *) -> bool { return true; };
+
+            paramsExt->flush(currentPlugin_->clapPlugin(), &inEvents, &outEvents);
+        }
+    }
 }
 
 const void *CLAP_ABI Host::getExtension(const clap_host_t *host, const char *extensionId)
@@ -205,6 +233,7 @@ void CLAP_ABI Host::paramsRequestFlush(const clap_host_t *host)
     if (self)
     {
         self->assertNotAudioThread("clap_host_params::request_flush()");
+        self->requestedFlush_.store(true);
     }
 }
 
