@@ -172,6 +172,14 @@ std::optional<NotePortConfig> NotePortConfig::query(Plugin &plugin)
 bool ParamInfo::hidden() const { return (flags & CLAP_PARAM_IS_HIDDEN) != 0; }
 bool ParamInfo::readonly() const { return (flags & CLAP_PARAM_IS_READONLY) != 0; }
 bool ParamInfo::stepped() const { return (flags & CLAP_PARAM_IS_STEPPED) != 0; }
+bool ParamInfo::automatable() const
+{
+    constexpr clap_param_info_flags anyAutomate =
+        CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE_ID |
+        CLAP_PARAM_IS_AUTOMATABLE_PER_KEY | CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL |
+        CLAP_PARAM_IS_AUTOMATABLE_PER_PORT;
+    return (flags & anyAutomate) != 0;
+}
 
 std::optional<ParamsExt> ParamsExt::create(Plugin &plugin)
 {

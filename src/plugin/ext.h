@@ -84,6 +84,8 @@ struct ParamInfo
     bool hidden() const;
     bool readonly() const;
     bool stepped() const;
+    // Automatable in any form: globally or per note-id/key/channel/port.
+    bool automatable() const;
 };
 
 // Keyed by stable parameter ID. std::map keeps a consistent iteration order between runs, matching

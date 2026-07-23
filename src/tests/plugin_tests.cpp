@@ -214,8 +214,8 @@ std::vector<TestCaseInfo> PluginTests::getAllTests()
         // Parameter tests
         {"param-conversions",
          "Asserts that value to string and string to value conversions are supported for either "
-         "all or none of the plugin's parameters, and that conversions between values and strings "
-         "roundtrip consistently."},
+         "all or none of the plugin's automatable parameters, and that conversions between values "
+         "and strings roundtrip consistently."},
         {"param-fuzz-basic",
          "Generates random parameter values, sets those on the plugin, and has the plugin process "
          "buffers of random audio and note events. The plugin passes the test if it doesn't "
@@ -778,8 +778,8 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
     const std::string testName = "param-conversions";
     const std::string description =
         "Asserts that value to string and string to value conversions are supported for either all "
-        "or none of the plugin's parameters, and that conversions between values and strings "
-        "roundtrip consistently.";
+        "or none of the plugin's automatable parameters, and that conversions between values and "
+        "strings roundtrip consistently.";
 
     try
     {
@@ -807,8 +807,26 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
         // meaning) plus four random values in range. Stepped parameters only accept integer values,
         // so their random values are rounded to a valid step - feeding a stepped parameter a
         // fractional value is not a meaningful test.
+        //
+        // Only parameters that are automatable in some form are considered. A host never needs to
+        // display or parse a value for a non-automatable parameter, so plugins are free to leave
+        // the conversions unimplemented for those without breaking the all-or-none rule.
         constexpr int kValuesPerParam = 6;
-        size_t expectedConversions = paramInfos.size() * kValuesPerParam;
+        size_t numAutomatable = 0;
+        for (const auto &[paramId, info] : paramInfos)
+        {
+            if (info.automatable())
+            {
+                numAutomatable++;
+            }
+        }
+        if (numAutomatable == 0)
+        {
+            return TestResult::skipped(testName, description,
+                                       "The plugin does not have any automatable parameters.");
+        }
+
+        size_t expectedConversions = numAutomatable * kValuesPerParam;
         size_t numSupportedValueToText = 0;
         size_t numSupportedTextToValue = 0;
         std::vector<std::string> failedValueToText;
@@ -816,6 +834,11 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
 
         for (const auto &[paramId, info] : paramInfos)
         {
+            if (!info.automatable())
+            {
+                continue;
+            }
+
             auto pick = [&]()
             {
                 double value = prng.nextDouble(info.minValue, info.maxValue);
@@ -915,8 +938,8 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 "'clap_plugin_params::value_to_text()' succeeded for " +
                 std::to_string(numSupportedValueToText) + " out of " +
                 std::to_string(expectedConversions) +
-                " calls; it should be supported for either all parameters or none. The conversions "
-                "that were not supported:" +
+                " calls; it should be supported for either all automatable parameters or none. The "
+                "conversions that were not supported:" +
                 formatTruncatedList(failedValueToText));
         }
         if (numSupportedTextToValue != 0 && numSupportedTextToValue != expectedConversions)
@@ -925,8 +948,8 @@ TestResult PluginTests::testParamConversions(PluginLibrary &library, const std::
                 "'clap_plugin_params::text_to_value()' succeeded for " +
                 std::to_string(numSupportedTextToValue) + " out of " +
                 std::to_string(expectedConversions) +
-                " calls; it should be supported for either all parameters or none. The conversions "
-                "that were not supported:" +
+                " calls; it should be supported for either all automatable parameters or none. The "
+                "conversions that were not supported:" +
                 formatTruncatedList(failedTextToValue));
         }
 

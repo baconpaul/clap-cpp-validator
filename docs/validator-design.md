@@ -241,7 +241,7 @@ Run `clap-validator list tests` for the authoritative list. As of this writing:
 | `process-note-out-of-place-basic` | random consistent note/MIDI events process consistently |
 | `process-note-inconsistent` | intentionally inconsistent note events still process consistently |
 | `process-reactivation` | reactivating at varied sample rates and block sizes (1-sample, large, min≠max) processes consistently |
-| `param-conversions` | value↔text conversions are all-or-none and roundtrip |
+| `param-conversions` | value↔text conversions on automatable params are all-or-none and roundtrip |
 | `param-fuzz-basic` | random parameter values + audio/notes produce no NaN/Inf and no crash |
 | `param-set-wrong-namespace` | param events with a wrong namespace id are ignored |
 | `state-invalid` | loading empty state returns false |
